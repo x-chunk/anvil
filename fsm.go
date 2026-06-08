@@ -80,7 +80,7 @@ func (fsm *FSMComparable[K, V]) Reset(id K) {
 	fsm.Set(id, fsm.initState)
 }
 
-func (fsm *FSMComparable[K, V]) IsNotInit(id K) bool {
+func (fsm *FSMComparable[K, V]) IsInit(id K) bool {
 	if state, ok := fsm.states[id]; ok {
 		return state == fsm.initState
 	}

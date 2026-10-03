@@ -73,3 +73,24 @@ func TestCacheInvalidateFreesEntry(t *testing.T) {
 		t.Fatalf("%d entries left in the map after Invalidate, want 0", n)
 	}
 }
+
+func TestCacheCleanup(t *testing.T) {
+	c, clk := newTestCache[string, int](time.Minute)
+	c.Set("old", 1)
+	clk.Advance(40 * time.Second)
+	c.Set("fresh", 2)
+	clk.Advance(30 * time.Second) // old: 70s, fresh: 30s
+
+	if n := c.Cleanup(); n != 1 {
+		t.Fatalf("Cleanup removed %d items, want 1", n)
+	}
+	if len(c.items) != 1 {
+		t.Fatalf("%d items left, want 1", len(c.items))
+	}
+	if _, ok := c.Get("fresh"); !ok {
+		t.Fatal("fresh item was removed")
+	}
+	if n := c.Cleanup(); n != 0 {
+		t.Fatalf("second Cleanup removed %d items, want 0", n)
+	}
+}

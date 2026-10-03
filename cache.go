@@ -56,3 +56,22 @@ func (c *Cache[K, V]) Invalidate(key K) {
 	defer c.mu.Unlock()
 	delete(c.items, key)
 }
+
+// Cleanup removes all expired items and returns how many were removed.
+//
+// Expired items are never returned by Get, but they stay in memory until
+// they are overwritten, invalidated or removed by Cleanup.
+func (c *Cache[K, V]) Cleanup() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := c.now()
+	removed := 0
+	for key, item := range c.items {
+		if !now.Before(item.expiresAt) {
+			delete(c.items, key)
+			removed++
+		}
+	}
+	return removed
+}

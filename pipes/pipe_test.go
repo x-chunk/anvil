@@ -67,3 +67,24 @@ func TestPipeWorkerPoolForwardsResults(t *testing.T) {
 		t.Fatal("out should be closed after in is closed")
 	}
 }
+
+func TestPipeAsyncForwardsResults(t *testing.T) {
+	in, out := make(chan int), make(chan int)
+	p := NewPipe(in, out,
+		WithAsync[int](),
+		WithMiddleware(func(v int) int { return v * 10 }),
+	)
+	go p.Start(context.Background())
+
+	in <- 1
+	in <- 2
+	close(in)
+
+	got := 0
+	for v := range out {
+		got += v
+	}
+	if got != 30 {
+		t.Fatalf("sum = %d, want 30", got)
+	}
+}

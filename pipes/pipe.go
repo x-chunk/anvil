@@ -108,8 +108,11 @@ func (p *Pipe[T]) Start(ctx context.Context) error {
 				continue
 			}
 
-			go p.middleware(v)
-			p.out <- v
+			inflight.Add(1)
+			go func() {
+				defer inflight.Done()
+				p.out <- p.middleware(v)
+			}()
 		case <-ctx.Done():
 			return ctx.Err()
 		}

@@ -86,3 +86,21 @@ func TestWorkerRecoversFromPanic(t *testing.T) {
 		t.Fatalf("got %+v, want 7", got)
 	}
 }
+
+func TestWorkerNilResultChannel(t *testing.T) {
+	wp := NewWorkerPool[int](1, 2)
+	wp.Start(context.Background())
+	defer wp.Shutdown()
+
+	wp.Submit(Task[int]{Exec: func(context.Context) (int, error) { return 1, nil }})
+
+	// The only worker must not be stuck on the fire-and-forget task.
+	res := make(chan Response[int], 1)
+	wp.Submit(Task[int]{
+		Result: res,
+		Exec:   func(context.Context) (int, error) { return 2, nil },
+	})
+	if got := recv(t, res); got.Value != 2 {
+		t.Fatalf("got %+v, want 2", got)
+	}
+}

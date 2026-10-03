@@ -58,7 +58,11 @@ func (wp *WorkerPool[V]) worker(ctx context.Context) {
 			res.Value, res.Err = safeExec(ctx, job.Exec)
 		}
 
-		job.Result <- res
+		// A nil Result means the caller doesn't care about the outcome;
+		// sending on a nil channel would block this worker forever.
+		if job.Result != nil {
+			job.Result <- res
+		}
 	}
 }
 

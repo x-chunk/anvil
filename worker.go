@@ -30,6 +30,9 @@ type WorkerPool[V any] struct {
 }
 
 func NewWorkerPool[V any](size, queueSize int) *WorkerPool[V] {
+	if size <= 0 {
+		panic("anvil: worker pool size must be positive")
+	}
 	return &WorkerPool[V]{
 		tasksChan: make(chan Task[V], queueSize),
 		size:      size,

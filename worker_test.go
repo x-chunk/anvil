@@ -140,3 +140,16 @@ func TestSubmitRacingShutdown(t *testing.T) {
 	wp.Shutdown()
 	wg.Wait()
 }
+
+func TestNewWorkerPoolRejectsNonPositiveSize(t *testing.T) {
+	for _, size := range []int{0, -1} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("size %d: expected panic", size)
+				}
+			}()
+			NewWorkerPool[int](size, 1)
+		}()
+	}
+}

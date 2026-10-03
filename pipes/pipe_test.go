@@ -105,3 +105,36 @@ func TestTransformPipeCancelDoesNotCloseIn(t *testing.T) {
 	// Writing after cancellation must not panic on a closed channel.
 	p.Push(1)
 }
+
+func TestStartReturnsOnCancelWithoutConsumer(t *testing.T) {
+	cases := map[string]func(ctx context.Context, in chan int) error{
+		"pipe": func(ctx context.Context, in chan int) error {
+			return NewPipe(in, make(chan int)).Start(ctx)
+		},
+		"pipe-sync-middleware": func(ctx context.Context, in chan int) error {
+			return NewPipe(in, make(chan int), WithMiddleware(func(v int) int { return v })).Start(ctx)
+		},
+		"pipe-async": func(ctx context.Context, in chan int) error {
+			return NewPipe(in, make(chan int), WithAsync[int](), WithMiddleware(func(v int) int { return v })).Start(ctx)
+		},
+		"transform": func(ctx context.Context, in chan int) error {
+			return NewTransformPipe(in, make(chan int), WithTransformMiddleware(func(v int) int { return v })).Start(ctx)
+		},
+	}
+	for name, start := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			in := make(chan int, 1)
+			in <- 1 // nobody reads out, so the send would block forever
+
+			done := make(chan error, 1)
+			go func() { done <- start(ctx, in) }()
+
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+			if err, _ := recv(t, done); err != context.Canceled {
+				t.Fatalf("Start returned %v, want context.Canceled", err)
+			}
+		})
+	}
+}

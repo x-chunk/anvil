@@ -80,12 +80,16 @@ func (p *Pipe[T]) Start(ctx context.Context) error {
 			}
 
 			if p.middleware == nil {
-				p.out <- v
+				if !send(ctx, p.out, v) {
+					return ctx.Err()
+				}
 				continue
 			}
 
 			if !p.isAsync {
-				p.out <- p.middleware(v)
+				if !send(ctx, p.out, p.middleware(v)) {
+					return ctx.Err()
+				}
 				continue
 			}
 
@@ -102,7 +106,7 @@ func (p *Pipe[T]) Start(ctx context.Context) error {
 				inflight.Add(1)
 				go func() {
 					defer inflight.Done()
-					p.out <- (<-resultCh).Value
+					send(ctx, p.out, (<-resultCh).Value)
 				}()
 
 				continue
@@ -111,11 +115,21 @@ func (p *Pipe[T]) Start(ctx context.Context) error {
 			inflight.Add(1)
 			go func() {
 				defer inflight.Done()
-				p.out <- p.middleware(v)
+				send(ctx, p.out, p.middleware(v))
 			}()
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+}
+
+// send delivers v to ch unless ctx is cancelled first.
+func send[T any](ctx context.Context, ch chan<- T, v T) bool {
+	select {
+	case ch <- v:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -165,7 +179,10 @@ func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
 				return nil
 			}
 
-			p.out <- p.middleware(v)
+			if !send(ctx, p.out, p.middleware(v)) {
+				close(p.out)
+				return ctx.Err()
+			}
 		case <-ctx.Done():
 			close(p.out)
 			return ctx.Err()

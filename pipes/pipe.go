@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/x-chunk/anvil"
+	"go.xchunk.org/anvil"
 )
 
 type Pipe[T any] struct {

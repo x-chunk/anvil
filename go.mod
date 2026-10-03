@@ -1,3 +1,3 @@
-module github.com/x-chunk/anvil
+module go.xchunk.org/anvil
 
 go 1.26

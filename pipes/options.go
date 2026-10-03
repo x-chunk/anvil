@@ -1,6 +1,6 @@
 package pipes
 
-import "github.com/x-chunk/anvil"
+import "go.xchunk.org/anvil"
 
 type PipeOption[T any] func(*Pipe[T])
 

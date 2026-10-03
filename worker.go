@@ -27,6 +27,8 @@ type WorkerPool[V any] struct {
 
 	mu     sync.RWMutex
 	closed bool
+
+	startOnce sync.Once
 }
 
 func NewWorkerPool[V any](size, queueSize int) *WorkerPool[V] {
@@ -39,11 +41,15 @@ func NewWorkerPool[V any](size, queueSize int) *WorkerPool[V] {
 	}
 }
 
+// Start launches the workers. Only the first call has an effect; later
+// calls are ignored, so the pool never runs more than size workers.
 func (wp *WorkerPool[V]) Start(ctx context.Context) {
-	for i := 0; i < wp.size; i++ {
-		wp.wg.Add(1)
-		go wp.worker(ctx)
-	}
+	wp.startOnce.Do(func() {
+		for range wp.size {
+			wp.wg.Add(1)
+			go wp.worker(ctx)
+		}
+	})
 }
 
 // Submit enqueues a task, blocking while the queue is full. It returns

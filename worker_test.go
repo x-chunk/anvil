@@ -153,3 +153,30 @@ func TestNewWorkerPoolRejectsNonPositiveSize(t *testing.T) {
 		}()
 	}
 }
+
+func TestStartTwiceDoesNotAddWorkers(t *testing.T) {
+	wp := NewWorkerPool[int](1, 2)
+	wp.Start(context.Background())
+	wp.Start(context.Background())
+	defer wp.Shutdown()
+
+	started, release := make(chan struct{}), make(chan struct{})
+	var secondRan atomic.Bool
+
+	wp.Submit(Task[int]{Exec: func(context.Context) (int, error) {
+		close(started)
+		<-release
+		return 0, nil
+	}})
+	<-started
+	wp.Submit(Task[int]{Exec: func(context.Context) (int, error) {
+		secondRan.Store(true)
+		return 0, nil
+	}})
+
+	time.Sleep(50 * time.Millisecond)
+	if secondRan.Load() {
+		t.Fatal("second task ran concurrently: more than size workers are running")
+	}
+	close(release)
+}

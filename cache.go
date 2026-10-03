@@ -9,7 +9,7 @@ import (
 // Cache is a store for caching items
 type Cache[K comparable, V any] struct {
 	mu    sync.RWMutex
-	items map[K]*CacheItem[V]
+	items map[K]CacheItem[V]
 	ttl   time.Duration
 	now   func() time.Time // replaceable in tests
 }
@@ -23,7 +23,7 @@ type CacheItem[V any] struct {
 // NewCache returns an instance of Cache
 func NewCache[K comparable, V any](ttl time.Duration) *Cache[K, V] {
 	return &Cache[K, V]{
-		items: make(map[K]*CacheItem[V]),
+		items: make(map[K]CacheItem[V]),
 		ttl:   ttl,
 		now:   time.Now,
 	}
@@ -45,7 +45,7 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 func (c *Cache[K, V]) Set(key K, value V) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.items[key] = &CacheItem[V]{
+	c.items[key] = CacheItem[V]{
 		Value:     value,
 		expiresAt: c.now().Add(c.ttl),
 	}

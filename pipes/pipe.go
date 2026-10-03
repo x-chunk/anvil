@@ -66,11 +66,16 @@ func NewTransformPipe[In any, Out any](in chan In, out chan Out, opts ...Transfo
 }
 
 func (p *Pipe[T]) Start(ctx context.Context) error {
+	var inflight sync.WaitGroup
+	defer func() {
+		inflight.Wait()
+		close(p.out)
+	}()
+
 	for {
 		select {
 		case v, ok := <-p.in:
 			if !ok {
-				close(p.out)
 				return nil
 			}
 
@@ -94,7 +99,11 @@ func (p *Pipe[T]) Start(ctx context.Context) error {
 					},
 				})
 
-				p.out <- v
+				inflight.Add(1)
+				go func() {
+					defer inflight.Done()
+					p.out <- (<-resultCh).Value
+				}()
 
 				continue
 			}
@@ -102,7 +111,6 @@ func (p *Pipe[T]) Start(ctx context.Context) error {
 			go p.middleware(v)
 			p.out <- v
 		case <-ctx.Done():
-			close(p.out)
 			return ctx.Err()
 		}
 	}

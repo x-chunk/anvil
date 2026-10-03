@@ -10,6 +10,7 @@ type Cache[K comparable, V any] struct {
 	mu    sync.RWMutex
 	items map[K]*CacheItem[V]
 	ttl   time.Duration
+	now   func() time.Time // replaceable in tests
 }
 
 // CacheItem is a single item of Cache
@@ -23,6 +24,7 @@ func NewCache[K comparable, V any](ttl time.Duration) *Cache[K, V] {
 	return &Cache[K, V]{
 		items: make(map[K]*CacheItem[V]),
 		ttl:   ttl,
+		now:   time.Now,
 	}
 }
 
@@ -31,7 +33,7 @@ func NewCache[K comparable, V any](ttl time.Duration) *Cache[K, V] {
 func (c *Cache[K, V]) Get(key K) (V, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if item, ok := c.items[key]; ok && time.Now().Before(item.expiresAt) {
+	if item, ok := c.items[key]; ok && c.now().Before(item.expiresAt) {
 		return item.Value, true
 	}
 	var zero V
@@ -44,7 +46,7 @@ func (c *Cache[K, V]) Set(key K, value V) {
 	defer c.mu.Unlock()
 	c.items[key] = &CacheItem[V]{
 		Value:     value,
-		expiresAt: time.Now().Add(c.ttl),
+		expiresAt: c.now().Add(c.ttl),
 	}
 }
 

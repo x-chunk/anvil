@@ -3,6 +3,7 @@ package anvil
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -111,4 +112,31 @@ func TestShutdownIsIdempotent(t *testing.T) {
 
 	wp.Shutdown()
 	wp.Shutdown() // used to panic: close of closed channel
+}
+
+func TestSubmitAfterShutdown(t *testing.T) {
+	wp := NewWorkerPool[int](1, 1)
+	wp.Start(context.Background())
+	wp.Shutdown()
+
+	err := wp.Submit(Task[int]{Exec: func(context.Context) (int, error) { return 0, nil }})
+	if !errors.Is(err, ErrPoolClosed) {
+		t.Fatalf("Submit err = %v, want ErrPoolClosed", err)
+	}
+}
+
+func TestSubmitRacingShutdown(t *testing.T) {
+	wp := NewWorkerPool[int](2, 1)
+	wp.Start(context.Background())
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			wp.Submit(Task[int]{Exec: func(context.Context) (int, error) { return 0, nil }})
+		}()
+	}
+	wp.Shutdown()
+	wg.Wait()
 }

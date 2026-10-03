@@ -2,9 +2,13 @@ package anvil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
+
+// ErrPoolClosed is returned by Submit after the pool has been shut down.
+var ErrPoolClosed = errors.New("anvil: worker pool is closed")
 
 type Response[V any] struct {
 	Value V
@@ -39,8 +43,20 @@ func (wp *WorkerPool[V]) Start(ctx context.Context) {
 	}
 }
 
-func (wp *WorkerPool[V]) Submit(task Task[V]) {
+// Submit enqueues a task, blocking while the queue is full. It returns
+// ErrPoolClosed if the pool has been shut down.
+func (wp *WorkerPool[V]) Submit(task Task[V]) error {
+	// The read lock keeps Shutdown from closing the channel under a
+	// concurrent send. Workers keep draining the queue until it is closed,
+	// so a Submit blocked on a full queue can't stall Shutdown forever.
+	wp.mu.RLock()
+	defer wp.mu.RUnlock()
+
+	if wp.closed {
+		return ErrPoolClosed
+	}
 	wp.tasksChan <- task
+	return nil
 }
 
 // Shutdown stops accepting tasks, lets queued tasks finish and waits for

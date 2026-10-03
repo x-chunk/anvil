@@ -3,17 +3,24 @@ package anvil
 import "fmt"
 
 // Result holds either a successful value of type T or an error.
+//
+// Experimental: Result is a new feature. Its API may change or be removed
+// in any release without notice.
 type Result[T any] struct {
 	value T
 	err   error
 }
 
 // Ok wraps a successful value into a Result.
+//
+// Experimental: see Result.
 func Ok[T any](value T) Result[T] {
 	return Result[T]{value: value}
 }
 
 // Err wraps an error into a Result.
+//
+// Experimental: see Result.
 func Err[T any](err error) Result[T] {
 	return Result[T]{err: err}
 }

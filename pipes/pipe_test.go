@@ -2,6 +2,7 @@ package pipes
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -136,5 +137,26 @@ func TestStartReturnsOnCancelWithoutConsumer(t *testing.T) {
 				t.Fatalf("Start returned %v, want context.Canceled", err)
 			}
 		})
+	}
+}
+
+func TestPipeReturnsErrorWhenWorkerPoolClosed(t *testing.T) {
+	wp := anvil.NewWorkerPool[int](1, 1)
+	wp.Start(context.Background())
+	wp.Shutdown()
+
+	in, out := make(chan int, 1), make(chan int)
+	p := NewPipe(in, out,
+		WithAsync[int](),
+		WithWorkerPool(wp),
+		WithMiddleware(func(v int) int { return v }),
+	)
+	in <- 1
+
+	done := make(chan error, 1)
+	go func() { done <- p.Start(context.Background()) }()
+
+	if err, _ := recv(t, done); !errors.Is(err, anvil.ErrPoolClosed) {
+		t.Fatalf("Start returned %v, want ErrPoolClosed", err)
 	}
 }

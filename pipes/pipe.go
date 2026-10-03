@@ -96,12 +96,15 @@ func (p *Pipe[T]) Start(ctx context.Context) error {
 			if p.workerPool != nil {
 				resultCh := make(chan anvil.Response[T])
 
-				p.workerPool.Submit(anvil.Task[T]{
+				err := p.workerPool.Submit(anvil.Task[T]{
 					Result: resultCh,
 					Exec: func(ctx context.Context) (T, error) {
 						return p.middleware(v), nil
 					},
 				})
+				if err != nil {
+					return err
+				}
 
 				inflight.Add(1)
 				go func() {

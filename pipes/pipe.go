@@ -167,7 +167,6 @@ func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
 
 			p.out <- p.middleware(v)
 		case <-ctx.Done():
-			close(p.in)
 			close(p.out)
 			return ctx.Err()
 		}

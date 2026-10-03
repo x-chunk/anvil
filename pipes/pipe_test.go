@@ -88,3 +88,20 @@ func TestPipeAsyncForwardsResults(t *testing.T) {
 		t.Fatalf("sum = %d, want 30", got)
 	}
 }
+
+func TestTransformPipeCancelDoesNotCloseIn(t *testing.T) {
+	in, out := make(chan int, 1), make(chan string)
+	p := NewTransformPipe(in, out, WithTransformMiddleware(func(v int) string { return "x" }))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Start(ctx) }()
+
+	cancel()
+	if err, _ := recv(t, done); err != context.Canceled {
+		t.Fatalf("Start returned %v, want context.Canceled", err)
+	}
+
+	// Writing after cancellation must not panic on a closed channel.
+	p.Push(1)
+}

@@ -54,7 +54,5 @@ func (c *Cache[K, V]) Set(key K, value V) {
 func (c *Cache[K, V]) Invalidate(key K) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if item, ok := c.items[key]; ok {
-		item.expiresAt = time.Time{}
-	}
+	delete(c.items, key)
 }

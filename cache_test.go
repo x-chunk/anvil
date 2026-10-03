@@ -62,3 +62,14 @@ func TestCacheInvalidate(t *testing.T) {
 		t.Fatal("unrelated item was removed")
 	}
 }
+
+func TestCacheInvalidateFreesEntry(t *testing.T) {
+	c, _ := newTestCache[string, int](time.Minute)
+	c.Set("a", 1)
+
+	c.Invalidate("a")
+
+	if n := len(c.items); n != 0 {
+		t.Fatalf("%d entries left in the map after Invalidate, want 0", n)
+	}
+}

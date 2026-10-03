@@ -44,14 +44,18 @@ func (wp *WorkerPool[K]) Shutdown() {
 	wp.wg.Wait()
 }
 
-func (wp *WorkerPool[V]) worker(_ context.Context) {
+func (wp *WorkerPool[V]) worker(ctx context.Context) {
 	defer wp.wg.Done()
 	for job := range wp.tasksChan {
 		var res Response[V]
 
-		v, err := job.Exec(context.Background())
-		res.Value = v
-		res.Err = err
+		// Keep draining the queue after cancellation so every submitted
+		// task still gets a response.
+		if err := ctx.Err(); err != nil {
+			res.Err = err
+		} else {
+			res.Value, res.Err = job.Exec(ctx)
+		}
 
 		job.Result <- res
 	}

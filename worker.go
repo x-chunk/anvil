@@ -20,6 +20,9 @@ type WorkerPool[V any] struct {
 	tasksChan chan Task[V]
 	wg        sync.WaitGroup
 	size      int
+
+	mu     sync.RWMutex
+	closed bool
 }
 
 func NewWorkerPool[V any](size, queueSize int) *WorkerPool[V] {
@@ -40,8 +43,16 @@ func (wp *WorkerPool[V]) Submit(task Task[V]) {
 	wp.tasksChan <- task
 }
 
-func (wp *WorkerPool[K]) Shutdown() {
-	close(wp.tasksChan)
+// Shutdown stops accepting tasks, lets queued tasks finish and waits for
+// the workers to exit. It is safe to call more than once.
+func (wp *WorkerPool[V]) Shutdown() {
+	wp.mu.Lock()
+	if !wp.closed {
+		wp.closed = true
+		close(wp.tasksChan)
+	}
+	wp.mu.Unlock()
+
 	wp.wg.Wait()
 }
 

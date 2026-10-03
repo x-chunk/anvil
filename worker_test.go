@@ -104,3 +104,11 @@ func TestWorkerNilResultChannel(t *testing.T) {
 		t.Fatalf("got %+v, want 2", got)
 	}
 }
+
+func TestShutdownIsIdempotent(t *testing.T) {
+	wp := NewWorkerPool[int](2, 1)
+	wp.Start(context.Background())
+
+	wp.Shutdown()
+	wp.Shutdown() // used to panic: close of closed channel
+}

@@ -1,6 +1,7 @@
 package anvil
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -92,5 +93,39 @@ func TestCacheCleanup(t *testing.T) {
 	}
 	if n := c.Cleanup(); n != 0 {
 		t.Fatalf("second Cleanup removed %d items, want 0", n)
+	}
+}
+
+func TestCacheRunCleanup(t *testing.T) {
+	c := NewCache[string, int](5 * time.Millisecond) // real clock
+	c.Set("a", 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		c.RunCleanup(ctx, 5*time.Millisecond)
+		close(done)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		c.mu.RLock()
+		n := len(c.items)
+		c.mu.RUnlock()
+		if n == 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("expired item was never cleaned up")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunCleanup did not stop after cancel")
 	}
 }

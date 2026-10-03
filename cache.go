@@ -1,6 +1,7 @@
 package anvil
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -74,4 +75,20 @@ func (c *Cache[K, V]) Cleanup() int {
 		}
 	}
 	return removed
+}
+
+// RunCleanup calls Cleanup every interval until ctx is done. It blocks, so
+// run it in its own goroutine. It panics if interval is not positive.
+func (c *Cache[K, V]) RunCleanup(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			c.Cleanup()
+		case <-ctx.Done():
+			return
+		}
+	}
 }

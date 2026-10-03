@@ -94,19 +94,27 @@ func (p *Pipe[T]) Start(ctx context.Context) error {
 			}
 
 			if p.workerPool != nil {
-				resultCh := make(chan anvil.Response[T])
+				// Buffered so the worker never blocks on a result nobody waits for.
+				resultCh := make(chan anvil.Response[T], 1)
 
-				p.workerPool.Submit(anvil.Task[T]{
+				err := p.workerPool.SubmitCtx(ctx, anvil.Task[T]{
 					Result: resultCh,
 					Exec: func(ctx context.Context) (T, error) {
 						return p.middleware(v), nil
 					},
 				})
+				if err != nil {
+					return err
+				}
 
 				inflight.Add(1)
 				go func() {
 					defer inflight.Done()
-					send(ctx, p.out, (<-resultCh).Value)
+					select {
+					case res := <-resultCh:
+						send(ctx, p.out, res.Value)
+					case <-ctx.Done():
+					}
 				}()
 
 				continue

@@ -2,6 +2,7 @@ package pipes
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -136,5 +137,63 @@ func TestStartReturnsOnCancelWithoutConsumer(t *testing.T) {
 				t.Fatalf("Start returned %v, want context.Canceled", err)
 			}
 		})
+	}
+}
+
+func TestPipeReturnsErrorWhenWorkerPoolClosed(t *testing.T) {
+	wp := anvil.NewWorkerPool[int](1, 1)
+	wp.Start(context.Background())
+	wp.Shutdown()
+
+	in, out := make(chan int, 1), make(chan int)
+	p := NewPipe(in, out,
+		WithAsync[int](),
+		WithWorkerPool(wp),
+		WithMiddleware(func(v int) int { return v }),
+	)
+	in <- 1
+
+	done := make(chan error, 1)
+	go func() { done <- p.Start(context.Background()) }()
+
+	if err, _ := recv(t, done); !errors.Is(err, anvil.ErrPoolClosed) {
+		t.Fatalf("Start returned %v, want ErrPoolClosed", err)
+	}
+}
+
+func TestPipeCancelWhileWorkerPoolQueueFull(t *testing.T) {
+	wp := anvil.NewWorkerPool[int](1, 0)
+	wp.Start(context.Background())
+	defer wp.Shutdown()
+
+	block := make(chan struct{})
+	defer close(block)
+
+	in, out := make(chan int, 3), make(chan int, 3)
+	p := NewPipe(in, out,
+		WithAsync[int](),
+		WithWorkerPool(wp),
+		WithMiddleware(func(v int) int { <-block; return v }),
+	)
+	for i := 0; i < 3; i++ {
+		in <- i
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Start(ctx) }()
+
+	// The single worker is stuck in the middleware and the queue has no
+	// room, so Start is blocked in Submit.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Start returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after cancel")
 	}
 }

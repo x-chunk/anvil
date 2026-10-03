@@ -2,18 +2,29 @@ package anvil
 
 import "sync"
 
+// FSM is a mutex-guarded map of per-key states with a default state.
+//
+// Deprecated: FSM is not a state machine (no transitions or validation) and
+// may be removed in a future release.
 type FSM[K comparable, V any] struct {
 	mu        sync.Mutex
 	states    map[K]V
 	initState V
 }
 
+// FSMComparable is FSM for comparable state values; it adds IsInit.
+//
+// Deprecated: FSMComparable is not a state machine (no transitions or
+// validation) and may be removed in a future release.
 type FSMComparable[K comparable, V comparable] struct {
 	mu        sync.Mutex
 	states    map[K]V
 	initState V
 }
 
+// NewFSM returns an instance of FSM.
+//
+// Deprecated: see FSM.
 func NewFSM[K comparable, V any](initState V) *FSM[K, V] {
 	return &FSM[K, V]{
 		states:    make(map[K]V),
@@ -21,6 +32,9 @@ func NewFSM[K comparable, V any](initState V) *FSM[K, V] {
 	}
 }
 
+// NewFSMComparable returns an instance of FSMComparable.
+//
+// Deprecated: see FSMComparable.
 func NewFSMComparable[K comparable, V comparable](initState V) *FSMComparable[K, V] {
 	return &FSMComparable[K, V]{
 		states:    make(map[K]V),

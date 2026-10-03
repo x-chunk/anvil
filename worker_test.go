@@ -62,3 +62,27 @@ func TestWorkerSkipsTasksAfterCancel(t *testing.T) {
 		t.Fatal("Exec ran after the pool context was cancelled")
 	}
 }
+
+func TestWorkerRecoversFromPanic(t *testing.T) {
+	wp := NewWorkerPool[int](1, 2)
+	wp.Start(context.Background())
+	defer wp.Shutdown()
+
+	bad, good := make(chan Response[int], 1), make(chan Response[int], 1)
+	wp.Submit(Task[int]{
+		Result: bad,
+		Exec:   func(context.Context) (int, error) { panic("boom") },
+	})
+	wp.Submit(Task[int]{
+		Result: good,
+		Exec:   func(context.Context) (int, error) { return 7, nil },
+	})
+
+	if got := recv(t, bad); got.Err == nil {
+		t.Fatal("expected an error from the panicking task")
+	}
+	// The single worker must have survived to run the next task.
+	if got := recv(t, good); got.Value != 7 || got.Err != nil {
+		t.Fatalf("got %+v, want 7", got)
+	}
+}

@@ -2,6 +2,7 @@ package anvil
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -54,9 +55,21 @@ func (wp *WorkerPool[V]) worker(ctx context.Context) {
 		if err := ctx.Err(); err != nil {
 			res.Err = err
 		} else {
-			res.Value, res.Err = job.Exec(ctx)
+			res.Value, res.Err = safeExec(ctx, job.Exec)
 		}
 
 		job.Result <- res
 	}
+}
+
+// safeExec runs exec and converts a panic into an error so that one bad
+// task can't take down the worker (and the whole process).
+func safeExec[V any](ctx context.Context, exec func(context.Context) (V, error)) (v V, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			var zero V
+			v, err = zero, fmt.Errorf("anvil: task panicked: %v", r)
+		}
+	}()
+	return exec(ctx)
 }

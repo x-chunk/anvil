@@ -55,6 +55,12 @@ func (wp *WorkerPool[V]) Start(ctx context.Context) {
 // Submit enqueues a task, blocking while the queue is full. It returns
 // ErrPoolClosed if the pool has been shut down.
 func (wp *WorkerPool[V]) Submit(task Task[V]) error {
+	return wp.SubmitCtx(context.Background(), task)
+}
+
+// SubmitCtx is like Submit but gives up with ctx.Err() if ctx is done
+// before the task could be enqueued.
+func (wp *WorkerPool[V]) SubmitCtx(ctx context.Context, task Task[V]) error {
 	// The read lock keeps Shutdown from closing the channel under a
 	// concurrent send. Workers keep draining the queue until it is closed,
 	// so a Submit blocked on a full queue can't stall Shutdown forever.
@@ -64,8 +70,16 @@ func (wp *WorkerPool[V]) Submit(task Task[V]) error {
 	if wp.closed {
 		return ErrPoolClosed
 	}
-	wp.tasksChan <- task
-	return nil
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	select {
+	case wp.tasksChan <- task:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Shutdown stops accepting tasks, lets queued tasks finish and waits for

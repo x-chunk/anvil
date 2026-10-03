@@ -180,3 +180,27 @@ func TestStartTwiceDoesNotAddWorkers(t *testing.T) {
 	}
 	close(release)
 }
+
+func TestSubmitCtxCancelWhileQueueFull(t *testing.T) {
+	// Not started, unbuffered queue: Submit would block forever.
+	wp := NewWorkerPool[int](1, 0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := wp.SubmitCtx(ctx, Task[int]{Exec: func(context.Context) (int, error) { return 0, nil }})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SubmitCtx err = %v, want DeadlineExceeded", err)
+	}
+}
+
+func TestSubmitCtxAlreadyCancelled(t *testing.T) {
+	wp := NewWorkerPool[int](1, 1) // has room, but ctx is already done
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := wp.SubmitCtx(ctx, Task[int]{Exec: func(context.Context) (int, error) { return 0, nil }})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("SubmitCtx err = %v, want context.Canceled", err)
+	}
+}

@@ -80,8 +80,7 @@ func (p *Pipe[T]) Start(ctx context.Context) error {
 			}
 
 			if !p.isAsync {
-				p.middleware(v)
-				p.out <- v
+				p.out <- p.middleware(v)
 				continue
 			}
 

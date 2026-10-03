@@ -10,16 +10,30 @@ import (
 // ErrPoolClosed is returned by Submit after the pool has been shut down.
 var ErrPoolClosed = errors.New("anvil: worker pool is closed")
 
+// Response is the outcome of a Task: the value returned by Exec, or the
+// error it returned. A panic in Exec and a cancelled pool context are also
+// reported through Err.
 type Response[V any] struct {
 	Value V
 	Err   error
 }
 
+// Task is a unit of work for a WorkerPool.
 type Task[V any] struct {
-	Exec   func(ctx context.Context) (V, error)
+	// Exec does the work. It receives the context passed to
+	// WorkerPool.Start.
+	Exec func(ctx context.Context) (V, error)
+
+	// Result receives exactly one Response when the task completes. It may
+	// be nil if the outcome is not needed. The worker sends on it
+	// synchronously, so use a buffered channel (capacity >= 1) or make
+	// sure a receiver is always waiting; otherwise the worker stays blocked.
 	Result chan Response[V]
 }
 
+// WorkerPool runs tasks on a fixed number of goroutines fed from a bounded
+// queue. Create it with NewWorkerPool, call Start once, submit tasks with
+// Submit or SubmitCtx and finish with Shutdown.
 type WorkerPool[V any] struct {
 	tasksChan chan Task[V]
 	wg        sync.WaitGroup
@@ -31,6 +45,9 @@ type WorkerPool[V any] struct {
 	startOnce sync.Once
 }
 
+// NewWorkerPool creates a pool of size workers with room for queueSize
+// pending tasks. It panics if size is not positive. Workers are not running
+// until Start is called.
 func NewWorkerPool[V any](size, queueSize int) *WorkerPool[V] {
 	if size <= 0 {
 		panic("anvil: worker pool size must be positive")

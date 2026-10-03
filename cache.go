@@ -6,7 +6,11 @@ import (
 	"time"
 )
 
-// Cache is a store for caching items
+// Cache is an in-memory key-value store whose items expire ttl after they
+// were set. It is safe for concurrent use.
+//
+// Expiry is checked on Get; memory of expired items is reclaimed by
+// Cleanup or RunCleanup.
 type Cache[K comparable, V any] struct {
 	mu    sync.RWMutex
 	items map[K]CacheItem[V]
@@ -14,13 +18,14 @@ type Cache[K comparable, V any] struct {
 	now   func() time.Time // replaceable in tests
 }
 
-// CacheItem is a single item of Cache
+// CacheItem is a single item of Cache.
 type CacheItem[V any] struct {
 	Value     V
 	expiresAt time.Time
 }
 
-// NewCache returns an instance of Cache
+// NewCache returns an instance of Cache whose items live for ttl. A
+// non-positive ttl makes every item expire immediately.
 func NewCache[K comparable, V any](ttl time.Duration) *Cache[K, V] {
 	return &Cache[K, V]{
 		items: make(map[K]CacheItem[V]),
@@ -29,8 +34,8 @@ func NewCache[K comparable, V any](ttl time.Duration) *Cache[K, V] {
 	}
 }
 
-// Get returns item from the Cache by key.
-// Allows multi-goroutine reading
+// Get returns the item stored under key. It reports false if the key is
+// missing or the item has expired. Concurrent Gets don't block each other.
 func (c *Cache[K, V]) Get(key K) (V, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -41,7 +46,7 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 	return zero, false
 }
 
-// Set creates or sets new value into the Cache
+// Set stores value under key and restarts its ttl.
 func (c *Cache[K, V]) Set(key K, value V) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -51,7 +56,7 @@ func (c *Cache[K, V]) Set(key K, value V) {
 	}
 }
 
-// Invalidate invalidates item from the Cache instantly
+// Invalidate removes the item stored under key, if any.
 func (c *Cache[K, V]) Invalidate(key K) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

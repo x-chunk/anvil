@@ -1,4 +1,4 @@
-package anvil
+package cache
 
 import (
 	"context"
@@ -16,7 +16,7 @@ func (c *fakeClock) Advance(d time.Duration) { c.t = c.t.Add(d) }
 
 func newTestCache[K comparable, V any](ttl time.Duration) (*Cache[K, V], *fakeClock) {
 	clk := &fakeClock{t: time.Unix(1_000_000, 0)}
-	c := NewCache[K, V](ttl)
+	c := New[K, V](ttl)
 	c.now = clk.Now
 	return c, clk
 }
@@ -100,7 +100,7 @@ func TestCacheCleanup(t *testing.T) {
 }
 
 func TestCacheRunCleanup(t *testing.T) {
-	c := NewCache[string, int](5 * time.Millisecond) // real clock
+	c := New[string, int](5 * time.Millisecond) // real clock
 	c.Set("a", 1)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -328,3 +328,5 @@ func TestCacheSetWithTTLZeroOverridesDefault(t *testing.T) {
 		t.Fatal("item with the default ttl should have expired")
 	}
 }
+
+var errTest = errors.New("test error")

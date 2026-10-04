@@ -1,4 +1,4 @@
-package anvil
+package cache
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 // by Cleanup or RunCleanup.
 type Cache[K comparable, V any] struct {
 	mu    sync.RWMutex
-	items map[K]CacheItem[V]
+	items map[K]Item[V]
 	ttl   time.Duration
 	now   func() time.Time // replaceable in tests
 
@@ -36,24 +36,24 @@ type cacheCall[V any] struct {
 // ttl doesn't make every Set scan the whole map.
 const minSweepInterval = time.Minute
 
-var errLoaderPanicked = errors.New("anvil: cache loader panicked")
+var errLoaderPanicked = errors.New("cache: loader panicked")
 
-// CacheItem is a single item of Cache.
-type CacheItem[V any] struct {
+// Item is a single item of Cache.
+type Item[V any] struct {
 	Value     V
 	expiresAt time.Time // zero means the item never expires
 }
 
 // alive reports whether the item is still valid at now.
-func (i CacheItem[V]) alive(now time.Time) bool {
+func (i Item[V]) alive(now time.Time) bool {
 	return i.expiresAt.IsZero() || now.Before(i.expiresAt)
 }
 
-// NewCache returns an instance of Cache whose items live for ttl. A
+// New returns an instance of Cache whose items live for ttl. A
 // non-positive ttl means items never expire.
-func NewCache[K comparable, V any](ttl time.Duration) *Cache[K, V] {
+func New[K comparable, V any](ttl time.Duration) *Cache[K, V] {
 	return &Cache[K, V]{
-		items: make(map[K]CacheItem[V]),
+		items: make(map[K]Item[V]),
 		ttl:   ttl,
 		now:   time.Now,
 		calls: make(map[K]*cacheCall[V]),
@@ -89,7 +89,7 @@ func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
 		c.sweep(now)
 		c.nextSweep = now.Add(max(c.ttl, minSweepInterval))
 	}
-	item := CacheItem[V]{Value: value}
+	item := Item[V]{Value: value}
 	if ttl > 0 {
 		item.expiresAt = now.Add(ttl)
 	}

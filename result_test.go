@@ -78,3 +78,17 @@ func TestResultValue(t *testing.T) {
 		t.Fatalf("round trip = %d, want 3", got)
 	}
 }
+
+func TestMust(t *testing.T) {
+	if got := Must(1, nil); got != 1 {
+		t.Fatalf("Must(1, nil) = %d", got)
+	}
+
+	defer func() {
+		err, ok := recover().(error)
+		if !ok || !errors.Is(err, errTest) {
+			t.Fatalf("Must panicked with %v, want an error wrapping errTest", err)
+		}
+	}()
+	Must(1, errTest)
+}

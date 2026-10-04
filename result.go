@@ -37,6 +37,14 @@ func Of[T any](value T, err error) Result[T] {
 	return Ok(value)
 }
 
+// Must returns value, or panics with err if err is non-nil. It is meant for
+// initialization that cannot reasonably fail, like Must(regexp.Compile(p)).
+//
+// Experimental: see Result.
+func Must[T any](value T, err error) T {
+	return Of(value, err).Unwrap()
+}
+
 // Unwrap returns the value or panics if the result holds an error.
 //
 // The panic value is an error wrapping the result's error, so a recovered

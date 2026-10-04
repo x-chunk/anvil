@@ -1,3 +1,3 @@
 module go.xchunk.org/anvil
 
-go 1.26
+go 1.24

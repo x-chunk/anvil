@@ -3,6 +3,9 @@ package pipes
 import (
 	"context"
 	"errors"
+	"sort"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -292,4 +295,97 @@ func TestLockedZeroValueIsUsable(t *testing.T) {
 	}
 	l.set(false)
 	recv(t, released)
+}
+
+func TestPipeIsTransformPipe(t *testing.T) {
+	var p *TransformPipe[int, int] = NewPipe(make(chan int), make(chan int))
+	_ = p
+}
+
+func TestPipeWithoutMiddlewareForwards(t *testing.T) {
+	in, out := make(chan string), make(chan string)
+	go NewPipe(in, out).Start(context.Background())
+
+	in <- "a"
+	if got, _ := recv(t, out); got != "a" {
+		t.Fatalf("got %q, want a", got)
+	}
+	close(in)
+}
+
+func TestPipeWithoutMiddlewareForwardsNilInterface(t *testing.T) {
+	in, out := make(chan error), make(chan error)
+	go NewPipe(in, out).Start(context.Background())
+
+	in <- nil
+	if got, ok := recv(t, out); !ok || got != nil {
+		t.Fatalf("got %v, %v; want nil, true", got, ok)
+	}
+	close(in)
+}
+
+func TestTransformPipeWithoutMiddlewareReturnsError(t *testing.T) {
+	in, out := make(chan int), make(chan string)
+	p := NewTransformPipe[int, string](in, out)
+
+	if err := p.Start(context.Background()); !errors.Is(err, ErrMiddlewareRequired) {
+		t.Fatalf("Start returned %v, want ErrMiddlewareRequired", err)
+	}
+	if _, ok := <-out; ok {
+		t.Fatal("out should be closed after a failed Start")
+	}
+}
+
+func TestTransformPipeAsync(t *testing.T) {
+	in, out := make(chan int), make(chan string)
+	p := NewTransformPipe(in, out,
+		WithTransformAsync[int, string](),
+		WithTransformMiddleware(func(v int) string { return strconv.Itoa(v) }),
+	)
+	go p.Start(context.Background())
+
+	go func() {
+		for i := 0; i < 5; i++ {
+			in <- i
+		}
+		close(in)
+	}()
+
+	var got []string
+	for v := range out {
+		got = append(got, v)
+	}
+	sort.Strings(got)
+	if want := "0 1 2 3 4"; strings.Join(got, " ") != want {
+		t.Fatalf("got %v, want %s", got, want)
+	}
+}
+
+func TestTransformPipeWorkerPool(t *testing.T) {
+	wp := anvil.NewWorkerPool[string](2, 1)
+	wp.Start(context.Background())
+	defer wp.Shutdown()
+
+	in, out := make(chan int), make(chan string)
+	p := NewTransformPipe(in, out,
+		WithTransformAsync[int, string](),
+		WithTransformWorkerPool[int, string](wp),
+		WithTransformMiddleware(func(v int) string { return strconv.Itoa(v * 2) }),
+	)
+	go p.Start(context.Background())
+
+	go func() {
+		for i := 1; i <= 6; i++ {
+			in <- i
+		}
+		close(in)
+	}()
+
+	n := 0
+	for range out {
+		n++
+	}
+	if n != 6 {
+		t.Fatalf("received %d results, want 6", n)
+	}
 }

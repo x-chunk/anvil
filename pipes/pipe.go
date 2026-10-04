@@ -2,30 +2,33 @@ package pipes
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"sync"
 
 	"go.xchunk.org/anvil"
 )
 
-type Pipe[T any] struct {
-	in  chan T
-	out chan T
-
-	middleware Middleware[T, T]
-	workerPool *anvil.WorkerPool[T]
-	isAsync    bool
-
-	locked Locked
-}
-
+// TransformPipe reads values of type In from a channel, runs them through a
+// middleware and writes the results of type Out to another channel.
 type TransformPipe[In any, Out any] struct {
 	in  chan In
 	out chan Out
 
 	middleware Middleware[In, Out]
+	workerPool *anvil.WorkerPool[Out]
+	isAsync    bool
 
 	locked Locked
 }
+
+// Pipe is a TransformPipe whose input and output types are the same.
+type Pipe[T any] = TransformPipe[T, T]
+
+// ErrMiddlewareRequired is returned by Start when a TransformPipe has no
+// middleware and its input and output types differ, so there is no way to
+// convert the values.
+var ErrMiddlewareRequired = errors.New("pipes: middleware is required when input and output types differ")
 
 type Middleware[In any, Out any] func(v In) Out
 
@@ -42,19 +45,14 @@ func (l *Locked) init() {
 	l.once.Do(func() { l.cond = sync.NewCond(&l.mu) })
 }
 
+// NewPipe creates a Pipe that moves values from in to out. Without a
+// middleware it forwards values unchanged.
 func NewPipe[T any](in chan T, out chan T, opts ...PipeOption[T]) *Pipe[T] {
-	pipe := &Pipe[T]{
-		in:  in,
-		out: out,
-	}
-
-	for _, opt := range opts {
-		opt(pipe)
-	}
-
-	return pipe
+	return NewTransformPipe(in, out, opts...)
 }
 
+// NewTransformPipe creates a TransformPipe that moves values from in to out,
+// converting them with the configured middleware.
 func NewTransformPipe[In any, Out any](in chan In, out chan Out, opts ...TransformPipeOption[In, Out]) *TransformPipe[In, Out] {
 	pipe := &TransformPipe[In, Out]{
 		in:  in,
@@ -68,7 +66,23 @@ func NewTransformPipe[In any, Out any](in chan In, out chan Out, opts ...Transfo
 	return pipe
 }
 
-func (p *Pipe[T]) Start(ctx context.Context) error {
+// Start processes values until in is closed (returns nil) or ctx is done
+// (returns ctx.Err()), then waits for work still in flight and closes out.
+func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
+	middleware := p.middleware
+	if middleware == nil {
+		// Without a middleware values are forwarded as they are, which is
+		// only possible when both channels carry the same type.
+		if reflect.TypeFor[In]() != reflect.TypeFor[Out]() {
+			close(p.out)
+			return ErrMiddlewareRequired
+		}
+		middleware = func(v In) Out {
+			out, _ := any(v).(Out)
+			return out
+		}
+	}
+
 	var inflight sync.WaitGroup
 	defer func() {
 		inflight.Wait()
@@ -82,15 +96,8 @@ func (p *Pipe[T]) Start(ctx context.Context) error {
 				return nil
 			}
 
-			if p.middleware == nil {
-				if !send(ctx, p.out, v) {
-					return ctx.Err()
-				}
-				continue
-			}
-
-			if !p.isAsync {
-				if !send(ctx, p.out, p.middleware(v)) {
+			if !p.isAsync || p.middleware == nil {
+				if !send(ctx, p.out, middleware(v)) {
 					return ctx.Err()
 				}
 				continue
@@ -98,12 +105,12 @@ func (p *Pipe[T]) Start(ctx context.Context) error {
 
 			if p.workerPool != nil {
 				// Buffered so the worker never blocks on a result nobody waits for.
-				resultCh := make(chan anvil.Response[T], 1)
+				resultCh := make(chan anvil.Response[Out], 1)
 
-				err := p.workerPool.SubmitCtx(ctx, anvil.Task[T]{
+				err := p.workerPool.SubmitCtx(ctx, anvil.Task[Out]{
 					Result: resultCh,
-					Exec: func(ctx context.Context) (T, error) {
-						return p.middleware(v), nil
+					Exec: func(ctx context.Context) (Out, error) {
+						return middleware(v), nil
 					},
 				})
 				if err != nil {
@@ -126,7 +133,7 @@ func (p *Pipe[T]) Start(ctx context.Context) error {
 			inflight.Add(1)
 			go func() {
 				defer inflight.Done()
-				send(ctx, p.out, p.middleware(v))
+				send(ctx, p.out, middleware(v))
 			}()
 		case <-ctx.Done():
 			return ctx.Err()
@@ -141,69 +148,6 @@ func send[T any](ctx context.Context, ch chan<- T, v T) bool {
 		return true
 	case <-ctx.Done():
 		return false
-	}
-}
-
-func (p *Pipe[T]) Read() (T, bool) {
-	p.locked.Wait()
-
-	v, ok := <-p.out
-	return v, ok
-}
-
-func (p *Pipe[T]) Write(v T) {
-	p.locked.Wait()
-	p.in <- v
-}
-
-func (p *Pipe[T]) Pull() (T, bool) {
-	v, ok := <-p.out
-	return v, ok
-}
-
-func (p *Pipe[T]) Push(v T) {
-	p.in <- v
-}
-
-// Pause makes Read and Write block until Resume is called. Pull, Push and
-// the processing done by Start are not affected.
-func (p *Pipe[T]) Pause() {
-	p.locked.set(true)
-}
-
-// Resume releases Read and Write calls blocked by Pause.
-func (p *Pipe[T]) Resume() {
-	p.locked.set(false)
-}
-
-// Lock pauses the pipe.
-//
-// Deprecated: use Pause. Despite the name this is not a mutual-exclusion
-// lock, so it doesn't behave like sync.Locker.
-func (p *Pipe[T]) Lock() { p.Pause() }
-
-// Unlock resumes the pipe.
-//
-// Deprecated: use Resume.
-func (p *Pipe[T]) Unlock() { p.Resume() }
-
-func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
-	for {
-		select {
-		case v, ok := <-p.in:
-			if !ok {
-				close(p.out)
-				return nil
-			}
-
-			if !send(ctx, p.out, p.middleware(v)) {
-				close(p.out)
-				return ctx.Err()
-			}
-		case <-ctx.Done():
-			close(p.out)
-			return ctx.Err()
-		}
 	}
 }
 

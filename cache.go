@@ -2,6 +2,7 @@ package anvil
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -16,7 +17,19 @@ type Cache[K comparable, V any] struct {
 	items map[K]CacheItem[V]
 	ttl   time.Duration
 	now   func() time.Time // replaceable in tests
+
+	callsMu sync.Mutex
+	calls   map[K]*cacheCall[V] // in-flight GetOrSet loads
 }
+
+// cacheCall is a GetOrSet load that other callers for the same key wait on.
+type cacheCall[V any] struct {
+	done  chan struct{}
+	value V
+	err   error
+}
+
+var errLoaderPanicked = errors.New("anvil: cache loader panicked")
 
 // CacheItem is a single item of Cache.
 type CacheItem[V any] struct {
@@ -31,6 +44,7 @@ func NewCache[K comparable, V any](ttl time.Duration) *Cache[K, V] {
 		items: make(map[K]CacheItem[V]),
 		ttl:   ttl,
 		now:   time.Now,
+		calls: make(map[K]*cacheCall[V]),
 	}
 }
 
@@ -61,6 +75,54 @@ func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
 		Value:     value,
 		expiresAt: c.now().Add(ttl),
 	}
+}
+
+// GetOrSet returns the item stored under key. If there is none, it calls
+// load, stores the result with the cache's default ttl and returns it.
+//
+// Concurrent calls for the same missing key share a single load: one
+// caller runs it and the others wait for its result. An error from load is
+// returned to all of them and is not cached. If load panics, the panic
+// propagates in the calling goroutine and waiting callers get an error.
+func (c *Cache[K, V]) GetOrSet(key K, load func() (V, error)) (V, error) {
+	if v, ok := c.Get(key); ok {
+		return v, nil
+	}
+
+	c.callsMu.Lock()
+	if call, ok := c.calls[key]; ok {
+		c.callsMu.Unlock()
+		<-call.done
+		return call.value, call.err
+	}
+	call := &cacheCall[V]{done: make(chan struct{})}
+	c.calls[key] = call
+	c.callsMu.Unlock()
+
+	finished := false
+	defer func() {
+		if !finished {
+			call.err = errLoaderPanicked
+		}
+		c.callsMu.Lock()
+		delete(c.calls, key)
+		c.callsMu.Unlock()
+		close(call.done)
+	}()
+
+	// Another call may have stored the value between our Get and
+	// becoming the leader.
+	if v, ok := c.Get(key); ok {
+		call.value, finished = v, true
+		return v, nil
+	}
+
+	call.value, call.err = load()
+	finished = true
+	if call.err == nil {
+		c.Set(key, call.value)
+	}
+	return call.value, call.err
 }
 
 // Invalidate removes the item stored under key, if any.

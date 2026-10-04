@@ -22,7 +22,7 @@ type Pipe[In any, Out any] struct {
 	// pool; 0 means the pipe is sequential unless workerPool is set.
 	concurrency int
 
-	locked Locked
+	gate pauseGate
 }
 
 // ErrMiddlewareRequired is returned by Start when a Pipe has no
@@ -37,16 +37,16 @@ var ErrMiddlewareRequired = errors.New("pipes: middleware is required when input
 // goroutines at once.
 type Middleware[In any, Out any] func(ctx context.Context, v In) (Out, error)
 
-// Locked is the pause state shared by Read and Write. Its zero value is
+// pauseGate is the pause state shared by Read and Write. Its zero value is
 // ready to use.
-type Locked struct {
+type pauseGate struct {
 	once sync.Once
 	cond *sync.Cond
 	mu   sync.Mutex
 	is   bool
 }
 
-func (l *Locked) init() {
+func (l *pauseGate) init() {
 	l.once.Do(func() { l.cond = sync.NewCond(&l.mu) })
 }
 
@@ -203,7 +203,7 @@ func send[T any](ctx context.Context, ch chan<- T, v T) bool {
 // paused (see Pause); ok is false once out is closed. Code that must not be
 // affected by Pause can use the channels directly.
 func (p *Pipe[In, Out]) Read() (Out, bool) {
-	p.locked.Wait()
+	p.gate.wait()
 
 	v, ok := <-p.out
 	return v, ok
@@ -213,33 +213,22 @@ func (p *Pipe[In, Out]) Read() (Out, bool) {
 // Pause). Code that must not be affected by Pause can use the channels
 // directly.
 func (p *Pipe[In, Out]) Write(v In) {
-	p.locked.Wait()
+	p.gate.wait()
 	p.in <- v
 }
 
 // Pause makes Read and Write block until Resume is called. The processing
 // done by Start and direct use of the channels are not affected.
 func (p *Pipe[In, Out]) Pause() {
-	p.locked.set(true)
+	p.gate.set(true)
 }
 
 // Resume releases Read and Write calls blocked by Pause.
 func (p *Pipe[In, Out]) Resume() {
-	p.locked.set(false)
+	p.gate.set(false)
 }
 
-// Lock pauses the pipe.
-//
-// Deprecated: use Pause. Despite the name this is not a mutual-exclusion
-// lock, so it doesn't behave like sync.Locker.
-func (p *Pipe[In, Out]) Lock() { p.Pause() }
-
-// Unlock resumes the pipe.
-//
-// Deprecated: use Resume.
-func (p *Pipe[In, Out]) Unlock() { p.Resume() }
-
-func (l *Locked) set(paused bool) {
+func (l *pauseGate) set(paused bool) {
 	l.init()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -248,7 +237,7 @@ func (l *Locked) set(paused bool) {
 	l.cond.Broadcast()
 }
 
-func (l *Locked) Wait() {
+func (l *pauseGate) wait() {
 	l.init()
 	l.mu.Lock()
 	defer l.mu.Unlock()

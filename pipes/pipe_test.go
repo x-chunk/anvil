@@ -251,29 +251,13 @@ func TestPipePauseResume(t *testing.T) {
 	recv(t, wrote)
 }
 
-func TestDeprecatedLockUnlockStillWork(t *testing.T) {
-	in, out := make(chan int, 1), make(chan int, 1)
-	p := NewPipe(in, out)
-
-	p.Lock()
-	wrote := make(chan struct{})
-	go func() { p.Write(1); close(wrote) }()
-	select {
-	case <-wrote:
-		t.Fatal("Write did not block after Lock")
-	case <-time.After(50 * time.Millisecond):
-	}
-	p.Unlock()
-	recv(t, wrote)
-}
-
-func TestLockedZeroValueIsUsable(t *testing.T) {
-	var l Locked
-	l.Wait() // not paused: must return immediately
+func TestPauseGateZeroValueIsUsable(t *testing.T) {
+	var l pauseGate
+	l.wait() // not paused: must return immediately
 
 	l.set(true)
 	released := make(chan struct{})
-	go func() { l.Wait(); close(released) }()
+	go func() { l.wait(); close(released) }()
 
 	select {
 	case <-released:

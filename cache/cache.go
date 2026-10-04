@@ -1,4 +1,4 @@
-package anvil
+package cache
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 // by Cleanup or RunCleanup.
 type Cache[K comparable, V any] struct {
 	mu    sync.RWMutex
-	items map[K]CacheItem[V]
+	items map[K]Item[V]
 	ttl   time.Duration
 	now   func() time.Time // replaceable in tests
 
@@ -36,19 +36,24 @@ type cacheCall[V any] struct {
 // ttl doesn't make every Set scan the whole map.
 const minSweepInterval = time.Minute
 
-var errLoaderPanicked = errors.New("anvil: cache loader panicked")
+var errLoaderPanicked = errors.New("cache: loader panicked")
 
-// CacheItem is a single item of Cache.
-type CacheItem[V any] struct {
+// Item is a single item of Cache.
+type Item[V any] struct {
 	Value     V
-	expiresAt time.Time
+	expiresAt time.Time // zero means the item never expires
 }
 
-// NewCache returns an instance of Cache whose items live for ttl. A
-// non-positive ttl makes every item expire immediately.
-func NewCache[K comparable, V any](ttl time.Duration) *Cache[K, V] {
+// alive reports whether the item is still valid at now.
+func (i Item[V]) alive(now time.Time) bool {
+	return i.expiresAt.IsZero() || now.Before(i.expiresAt)
+}
+
+// New returns an instance of Cache whose items live for ttl. A
+// non-positive ttl means items never expire.
+func New[K comparable, V any](ttl time.Duration) *Cache[K, V] {
 	return &Cache[K, V]{
-		items: make(map[K]CacheItem[V]),
+		items: make(map[K]Item[V]),
 		ttl:   ttl,
 		now:   time.Now,
 		calls: make(map[K]*cacheCall[V]),
@@ -60,7 +65,7 @@ func NewCache[K comparable, V any](ttl time.Duration) *Cache[K, V] {
 func (c *Cache[K, V]) Get(key K) (V, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if item, ok := c.items[key]; ok && c.now().Before(item.expiresAt) {
+	if item, ok := c.items[key]; ok && item.alive(c.now()) {
 		return item.Value, true
 	}
 	var zero V
@@ -73,8 +78,8 @@ func (c *Cache[K, V]) Set(key K, value V) {
 }
 
 // SetWithTTL stores value under key like Set, but the item lives for ttl
-// instead of the cache's default. A non-positive ttl makes the item expire
-// immediately.
+// instead of the cache's default. A non-positive ttl means the item never
+// expires.
 func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -84,10 +89,11 @@ func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
 		c.sweep(now)
 		c.nextSweep = now.Add(max(c.ttl, minSweepInterval))
 	}
-	c.items[key] = CacheItem[V]{
-		Value:     value,
-		expiresAt: now.Add(ttl),
+	item := Item[V]{Value: value}
+	if ttl > 0 {
+		item.expiresAt = now.Add(ttl)
 	}
+	c.items[key] = item
 }
 
 // GetOrSet returns the item stored under key. If there is none, it calls
@@ -162,7 +168,7 @@ func (c *Cache[K, V]) Cleanup() int {
 func (c *Cache[K, V]) sweep(now time.Time) int {
 	removed := 0
 	for key, item := range c.items {
-		if !now.Before(item.expiresAt) {
+		if !item.alive(now) {
 			delete(c.items, key)
 			removed++
 		}

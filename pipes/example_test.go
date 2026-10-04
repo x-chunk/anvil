@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"strconv"
 
-	"go.xchunk.org/anvil/pipes"
+	"go.xchunk.org/anvil/v2/pipes"
 )
 
 func ExampleNewPipe() {
 	in, out := make(chan int), make(chan int)
-	p := pipes.NewPipe(in, out, pipes.WithMiddleware(func(v int) int { return v * 10 }))
+	p := pipes.NewPipe(in, out, pipes.WithMiddleware(func(_ context.Context, v int) (int, error) { return v * 10, nil }))
 	go p.Start(context.Background())
 
 	go func() {
@@ -27,10 +27,10 @@ func ExampleNewPipe() {
 	// 20
 }
 
-func ExampleNewTransformPipe() {
+func ExampleNewPipe_convert() {
 	in, out := make(chan int), make(chan string)
-	p := pipes.NewTransformPipe(in, out,
-		pipes.WithTransformMiddleware(func(v int) string { return "#" + strconv.Itoa(v) }),
+	p := pipes.NewPipe(in, out,
+		pipes.WithMiddleware(func(_ context.Context, v int) (string, error) { return "#" + strconv.Itoa(v), nil }),
 	)
 	go p.Start(context.Background())
 
@@ -43,14 +43,18 @@ func ExampleNewTransformPipe() {
 	// Output: #7
 }
 
-func ExampleWithMiddlewareErr() {
+func ExampleWithErrorHandler() {
+	var dropped []error
+
 	in, out := make(chan string), make(chan int)
-	p := pipes.NewTransformPipe(in, out,
-		pipes.WithTransformMiddlewareErr(func(_ context.Context, s string) (int, error) {
+	p := pipes.NewPipe(in, out,
+		pipes.WithMiddleware(func(_ context.Context, s string) (int, error) {
 			return strconv.Atoi(s)
 		}),
-		pipes.WithTransformErrorHandler[string, int](func(err error) {
-			fmt.Println("dropped:", err)
+		// The pipe is sequential, and out is closed before the loop below
+		// ends, so reading dropped afterwards is race-free.
+		pipes.WithErrorHandler[string, int](func(err error) {
+			dropped = append(dropped, err)
 		}),
 	)
 	go p.Start(context.Background())
@@ -65,8 +69,11 @@ func ExampleWithMiddlewareErr() {
 	for v := range out {
 		fmt.Println(v)
 	}
+	for _, err := range dropped {
+		fmt.Println("dropped:", err)
+	}
 	// Output:
 	// 1
-	// dropped: strconv.Atoi: parsing "oops": invalid syntax
 	// 3
+	// dropped: strconv.Atoi: parsing "oops": invalid syntax
 }

@@ -6,77 +6,55 @@ import (
 	"reflect"
 	"sync"
 
-	"go.xchunk.org/anvil"
+	"go.xchunk.org/anvil/v2/worker"
 )
 
-// TransformPipe reads values of type In from a channel, runs them through a
+// Pipe reads values of type In from a channel, runs them through a
 // middleware and writes the results of type Out to another channel.
-type TransformPipe[In any, Out any] struct {
+type Pipe[In any, Out any] struct {
 	in  chan In
 	out chan Out
 
-	middleware    Middleware[In, Out]
-	errMiddleware ErrMiddleware[In, Out]
-	onError       func(error)
-	workerPool    *anvil.WorkerPool[Out]
-	isAsync       bool
-	// concurrency limits in-flight middleware calls of an async pipe that
-	// has no worker pool; 0 means unlimited.
+	middleware Middleware[In, Out]
+	onError    func(error)
+	workerPool *worker.Pool[Out]
+	// concurrency limits in-flight middleware calls when there is no worker
+	// pool; 0 means the pipe is sequential unless workerPool is set.
 	concurrency int
 
-	locked Locked
+	gate pauseGate
 }
 
-// Pipe is a TransformPipe whose input and output types are the same. It
-// embeds the TransformPipe it wraps, so all of its methods are available.
-type Pipe[T any] struct {
-	*TransformPipe[T, T]
-}
-
-// ErrMiddlewareRequired is returned by Start when a TransformPipe has no
+// ErrMiddlewareRequired is returned by Start when a Pipe has no
 // middleware and its input and output types differ, so there is no way to
 // convert the values.
 var ErrMiddlewareRequired = errors.New("pipes: middleware is required when input and output types differ")
 
-// Middleware converts a value of a pipe. In async modes it may be called
-// from several goroutines at once. Use ErrMiddleware if it needs the
-// context or can fail.
-type Middleware[In any, Out any] func(v In) Out
+// Middleware converts a value of a pipe. It receives the context passed to
+// Start. A value for which it returns an error is dropped instead of being
+// sent to out, and the error is passed to the handler set with
+// WithErrorHandler, if any. In async modes it may be called from several
+// goroutines at once.
+type Middleware[In any, Out any] func(ctx context.Context, v In) (Out, error)
 
-// ErrMiddleware is a Middleware that receives the context passed to Start
-// and can fail. A value for which it returns an error is dropped, and the
-// error is passed to the handler set with WithErrorHandler, if any.
-type ErrMiddleware[In any, Out any] func(ctx context.Context, v In) (Out, error)
-
-// Locked is the pause state shared by Read and Write. Its zero value is
+// pauseGate is the pause state shared by Read and Write. Its zero value is
 // ready to use.
-type Locked struct {
+type pauseGate struct {
 	once sync.Once
 	cond *sync.Cond
 	mu   sync.Mutex
 	is   bool
 }
 
-func (l *Locked) init() {
+func (l *pauseGate) init() {
 	l.once.Do(func() { l.cond = sync.NewCond(&l.mu) })
 }
 
 // NewPipe creates a Pipe that moves values from in to out. Without a
-// middleware it forwards values unchanged.
-func NewPipe[T any](in chan T, out chan T, opts ...PipeOption[T]) *Pipe[T] {
-	pipe := &Pipe[T]{NewTransformPipe[T, T](in, out)}
-
-	for _, opt := range opts {
-		opt(pipe)
-	}
-
-	return pipe
-}
-
-// NewTransformPipe creates a TransformPipe that moves values from in to out,
-// converting them with the configured middleware.
-func NewTransformPipe[In any, Out any](in chan In, out chan Out, opts ...TransformPipeOption[In, Out]) *TransformPipe[In, Out] {
-	pipe := &TransformPipe[In, Out]{
+// middleware it forwards values unchanged, which requires In and Out to be
+// the same type.
+func NewPipe[In any, Out any](in chan In, out chan Out, opts ...Option[In, Out]) *Pipe[In, Out] {
+	pipe := &Pipe[In, Out]{
 		in:  in,
 		out: out,
 	}
@@ -93,30 +71,28 @@ func NewTransformPipe[In any, Out any](in chan In, out chan Out, opts ...Transfo
 // It blocks, so run it in its own goroutine.
 //
 // By default values are processed one at a time, in order. In async modes
-// (WithAsync, WithWorkerPool, WithConcurrency) middleware calls overlap and
+// (WithWorkerPool, WithConcurrency) middleware calls overlap and
 // results reach out in completion order, not input order.
 //
 // Start also returns early with the pool's error if a worker pool set with
 // WithWorkerPool has been shut down, and with ErrMiddlewareRequired if the
 // pipe has no middleware and In differs from Out.
-func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
-	hasMiddleware := p.middleware != nil || p.errMiddleware != nil
+func (p *Pipe[In, Out]) Start(ctx context.Context) error {
+	hasMiddleware := p.middleware != nil
+	async := p.workerPool != nil || p.concurrency > 0
 
-	process := p.errMiddleware
-	switch {
-	case process != nil:
-	case p.middleware != nil:
-		process = func(_ context.Context, v In) (Out, error) { return p.middleware(v), nil }
-	case reflect.TypeFor[In]() == reflect.TypeFor[Out]():
+	process := p.middleware
+	if process == nil {
+		if reflect.TypeFor[In]() != reflect.TypeFor[Out]() {
+			close(p.out)
+			return ErrMiddlewareRequired
+		}
 		// Without a middleware values are forwarded as they are, which is
 		// only possible when both channels carry the same type.
 		process = func(_ context.Context, v In) (Out, error) {
 			out, _ := any(v).(Out)
 			return out, nil
 		}
-	default:
-		close(p.out)
-		return ErrMiddlewareRequired
 	}
 
 	// handle reports whether the value should be forwarded.
@@ -148,7 +124,7 @@ func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
 				return nil
 			}
 
-			if !p.isAsync || !hasMiddleware {
+			if !async || !hasMiddleware {
 				out, err := process(ctx, v)
 				if !handle(err) {
 					continue
@@ -161,9 +137,9 @@ func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
 
 			if p.workerPool != nil {
 				// Buffered so the worker never blocks on a result nobody waits for.
-				resultCh := make(chan anvil.Response[Out], 1)
+				resultCh := make(chan worker.Response[Out], 1)
 
-				err := p.workerPool.SubmitCtx(ctx, anvil.Task[Out]{
+				err := p.workerPool.SubmitCtx(ctx, worker.Task[Out]{
 					Result: resultCh,
 					Exec: func(ctx context.Context) (Out, error) {
 						return process(ctx, v)
@@ -224,56 +200,35 @@ func send[T any](ctx context.Context, ch chan<- T, v T) bool {
 }
 
 // Read receives the next result from out. It blocks while the pipe is
-// paused (see Pause); ok is false once out is closed. Use Pull to read
-// regardless of Pause.
-func (p *TransformPipe[In, Out]) Read() (Out, bool) {
-	p.locked.Wait()
+// paused (see Pause); ok is false once out is closed. Code that must not be
+// affected by Pause can use the channels directly.
+func (p *Pipe[In, Out]) Read() (Out, bool) {
+	p.gate.wait()
 
 	v, ok := <-p.out
 	return v, ok
 }
 
 // Write sends v to the pipe's input. It blocks while the pipe is paused (see
-// Pause). Use Push to write regardless of Pause.
-func (p *TransformPipe[In, Out]) Write(v In) {
-	p.locked.Wait()
+// Pause). Code that must not be affected by Pause can use the channels
+// directly.
+func (p *Pipe[In, Out]) Write(v In) {
+	p.gate.wait()
 	p.in <- v
 }
 
-// Pull receives the next result from out like Read, but ignores Pause.
-func (p *TransformPipe[In, Out]) Pull() (Out, bool) {
-	v, ok := <-p.out
-	return v, ok
-}
-
-// Push sends v to the pipe's input like Write, but ignores Pause.
-func (p *TransformPipe[In, Out]) Push(v In) {
-	p.in <- v
-}
-
-// Pause makes Read and Write block until Resume is called. Pull, Push and
-// the processing done by Start are not affected.
-func (p *TransformPipe[In, Out]) Pause() {
-	p.locked.set(true)
+// Pause makes Read and Write block until Resume is called. The processing
+// done by Start and direct use of the channels are not affected.
+func (p *Pipe[In, Out]) Pause() {
+	p.gate.set(true)
 }
 
 // Resume releases Read and Write calls blocked by Pause.
-func (p *TransformPipe[In, Out]) Resume() {
-	p.locked.set(false)
+func (p *Pipe[In, Out]) Resume() {
+	p.gate.set(false)
 }
 
-// Lock pauses the pipe.
-//
-// Deprecated: use Pause. Despite the name this is not a mutual-exclusion
-// lock, so it doesn't behave like sync.Locker.
-func (p *TransformPipe[In, Out]) Lock() { p.Pause() }
-
-// Unlock resumes the pipe.
-//
-// Deprecated: use Resume.
-func (p *TransformPipe[In, Out]) Unlock() { p.Resume() }
-
-func (l *Locked) set(paused bool) {
+func (l *pauseGate) set(paused bool) {
 	l.init()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -282,7 +237,7 @@ func (l *Locked) set(paused bool) {
 	l.cond.Broadcast()
 }
 
-func (l *Locked) Wait() {
+func (l *pauseGate) wait() {
 	l.init()
 	l.mu.Lock()
 	defer l.mu.Unlock()

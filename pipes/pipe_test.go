@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"go.xchunk.org/anvil"
+	"go.xchunk.org/anvil/v2/worker"
 )
 
 func recv[T any](t *testing.T, ch <-chan T) (T, bool) {
@@ -28,7 +28,7 @@ func recv[T any](t *testing.T, ch <-chan T) (T, bool) {
 
 func TestPipeSyncForwardsMiddlewareResult(t *testing.T) {
 	in, out := make(chan int), make(chan int)
-	p := NewPipe(in, out, WithMiddleware(func(v int) int { return v * 2 }))
+	p := NewPipe(in, out, WithMiddleware(pure(func(v int) int { return v * 2 })))
 
 	go p.Start(context.Background())
 
@@ -40,15 +40,14 @@ func TestPipeSyncForwardsMiddlewareResult(t *testing.T) {
 }
 
 func TestPipeWorkerPoolForwardsResults(t *testing.T) {
-	wp := anvil.NewWorkerPool[int](2, 1)
+	wp := worker.New[int](2, 1)
 	wp.Start(context.Background())
 	defer wp.Shutdown()
 
 	in, out := make(chan int), make(chan int)
 	p := NewPipe(in, out,
-		WithAsync[int](),
-		WithWorkerPool(wp),
-		WithMiddleware(func(v int) int { return v + 1 }),
+		WithWorkerPool[int, int](wp),
+		WithMiddleware(pure(func(v int) int { return v + 1 })),
 	)
 	go p.Start(context.Background())
 
@@ -78,8 +77,8 @@ func TestPipeWorkerPoolForwardsResults(t *testing.T) {
 func TestPipeAsyncForwardsResults(t *testing.T) {
 	in, out := make(chan int), make(chan int)
 	p := NewPipe(in, out,
-		WithAsync[int](),
-		WithMiddleware(func(v int) int { return v * 10 }),
+		WithConcurrency[int, int](4),
+		WithMiddleware(pure(func(v int) int { return v * 10 })),
 	)
 	go p.Start(context.Background())
 
@@ -96,9 +95,9 @@ func TestPipeAsyncForwardsResults(t *testing.T) {
 	}
 }
 
-func TestTransformPipeCancelDoesNotCloseIn(t *testing.T) {
+func TestPipeCancelDoesNotCloseIn(t *testing.T) {
 	in, out := make(chan int, 1), make(chan string)
-	p := NewTransformPipe(in, out, WithTransformMiddleware(func(v int) string { return "x" }))
+	p := NewPipe(in, out, WithMiddleware(pure(func(v int) string { return "x" })))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -110,7 +109,7 @@ func TestTransformPipeCancelDoesNotCloseIn(t *testing.T) {
 	}
 
 	// Writing after cancellation must not panic on a closed channel.
-	p.Push(1)
+	p.Write(1)
 }
 
 func TestStartReturnsOnCancelWithoutConsumer(t *testing.T) {
@@ -119,13 +118,13 @@ func TestStartReturnsOnCancelWithoutConsumer(t *testing.T) {
 			return NewPipe(in, make(chan int)).Start(ctx)
 		},
 		"pipe-sync-middleware": func(ctx context.Context, in chan int) error {
-			return NewPipe(in, make(chan int), WithMiddleware(func(v int) int { return v })).Start(ctx)
+			return NewPipe(in, make(chan int), WithMiddleware(pure(func(v int) int { return v }))).Start(ctx)
 		},
 		"pipe-async": func(ctx context.Context, in chan int) error {
-			return NewPipe(in, make(chan int), WithAsync[int](), WithMiddleware(func(v int) int { return v })).Start(ctx)
+			return NewPipe(in, make(chan int), WithConcurrency[int, int](2), WithMiddleware(pure(func(v int) int { return v }))).Start(ctx)
 		},
 		"transform": func(ctx context.Context, in chan int) error {
-			return NewTransformPipe(in, make(chan int), WithTransformMiddleware(func(v int) int { return v })).Start(ctx)
+			return NewPipe(in, make(chan int), WithMiddleware(pure(func(v int) int { return v }))).Start(ctx)
 		},
 	}
 	for name, start := range cases {
@@ -147,28 +146,27 @@ func TestStartReturnsOnCancelWithoutConsumer(t *testing.T) {
 }
 
 func TestPipeReturnsErrorWhenWorkerPoolClosed(t *testing.T) {
-	wp := anvil.NewWorkerPool[int](1, 1)
+	wp := worker.New[int](1, 1)
 	wp.Start(context.Background())
 	wp.Shutdown()
 
 	in, out := make(chan int, 1), make(chan int)
 	p := NewPipe(in, out,
-		WithAsync[int](),
-		WithWorkerPool(wp),
-		WithMiddleware(func(v int) int { return v }),
+		WithWorkerPool[int, int](wp),
+		WithMiddleware(pure(func(v int) int { return v })),
 	)
 	in <- 1
 
 	done := make(chan error, 1)
 	go func() { done <- p.Start(context.Background()) }()
 
-	if err, _ := recv(t, done); !errors.Is(err, anvil.ErrPoolClosed) {
+	if err, _ := recv(t, done); !errors.Is(err, worker.ErrClosed) {
 		t.Fatalf("Start returned %v, want ErrPoolClosed", err)
 	}
 }
 
 func TestPipeCancelWhileWorkerPoolQueueFull(t *testing.T) {
-	wp := anvil.NewWorkerPool[int](1, 0)
+	wp := worker.New[int](1, 0)
 	wp.Start(context.Background())
 	defer wp.Shutdown()
 
@@ -177,9 +175,8 @@ func TestPipeCancelWhileWorkerPoolQueueFull(t *testing.T) {
 
 	in, out := make(chan int, 3), make(chan int, 3)
 	p := NewPipe(in, out,
-		WithAsync[int](),
-		WithWorkerPool(wp),
-		WithMiddleware(func(v int) int { <-block; return v }),
+		WithWorkerPool[int, int](wp),
+		WithMiddleware(pure(func(v int) int { <-block; return v })),
 	)
 	for i := 0; i < 3; i++ {
 		in <- i
@@ -238,22 +235,9 @@ func TestPauseBlocksReadAndWriteUntilResume(t *testing.T) {
 	}
 }
 
-func TestPauseDoesNotAffectPushAndPull(t *testing.T) {
-	in, out := make(chan int, 1), make(chan int, 1)
-	p := NewPipe(in, out)
-	p.Pause()
-	defer p.Resume()
-
-	p.Push(1) // must not block
-	out <- 2
-	if v, _ := p.Pull(); v != 2 {
-		t.Fatalf("Pull = %d, want 2", v)
-	}
-}
-
-func TestTransformPipePauseResume(t *testing.T) {
+func TestPipePauseResume(t *testing.T) {
 	in, out := make(chan int, 1), make(chan string, 1)
-	p := NewTransformPipe(in, out, WithTransformMiddleware(func(v int) string { return "x" }))
+	p := NewPipe(in, out, WithMiddleware(pure(func(v int) string { return "x" })))
 
 	p.Pause()
 	wrote := make(chan struct{})
@@ -267,29 +251,13 @@ func TestTransformPipePauseResume(t *testing.T) {
 	recv(t, wrote)
 }
 
-func TestDeprecatedLockUnlockStillWork(t *testing.T) {
-	in, out := make(chan int, 1), make(chan int, 1)
-	p := NewPipe(in, out)
-
-	p.Lock()
-	wrote := make(chan struct{})
-	go func() { p.Write(1); close(wrote) }()
-	select {
-	case <-wrote:
-		t.Fatal("Write did not block after Lock")
-	case <-time.After(50 * time.Millisecond):
-	}
-	p.Unlock()
-	recv(t, wrote)
-}
-
-func TestLockedZeroValueIsUsable(t *testing.T) {
-	var l Locked
-	l.Wait() // not paused: must return immediately
+func TestPauseGateZeroValueIsUsable(t *testing.T) {
+	var l pauseGate
+	l.wait() // not paused: must return immediately
 
 	l.set(true)
 	released := make(chan struct{})
-	go func() { l.Wait(); close(released) }()
+	go func() { l.wait(); close(released) }()
 
 	select {
 	case <-released:
@@ -298,11 +266,6 @@ func TestLockedZeroValueIsUsable(t *testing.T) {
 	}
 	l.set(false)
 	recv(t, released)
-}
-
-func TestPipeWrapsTransformPipe(t *testing.T) {
-	var p *TransformPipe[int, int] = NewPipe(make(chan int), make(chan int)).TransformPipe
-	_ = p
 }
 
 func TestPipeWithoutMiddlewareForwards(t *testing.T) {
@@ -327,9 +290,9 @@ func TestPipeWithoutMiddlewareForwardsNilInterface(t *testing.T) {
 	close(in)
 }
 
-func TestTransformPipeWithoutMiddlewareReturnsError(t *testing.T) {
+func TestPipeWithoutMiddlewareReturnsError(t *testing.T) {
 	in, out := make(chan int), make(chan string)
-	p := NewTransformPipe[int, string](in, out)
+	p := NewPipe[int, string](in, out)
 
 	if err := p.Start(context.Background()); !errors.Is(err, ErrMiddlewareRequired) {
 		t.Fatalf("Start returned %v, want ErrMiddlewareRequired", err)
@@ -339,11 +302,11 @@ func TestTransformPipeWithoutMiddlewareReturnsError(t *testing.T) {
 	}
 }
 
-func TestTransformPipeAsync(t *testing.T) {
+func TestPipeAsync(t *testing.T) {
 	in, out := make(chan int), make(chan string)
-	p := NewTransformPipe(in, out,
-		WithTransformAsync[int, string](),
-		WithTransformMiddleware(func(v int) string { return strconv.Itoa(v) }),
+	p := NewPipe(in, out,
+		WithConcurrency[int, string](4),
+		WithMiddleware(pure(func(v int) string { return strconv.Itoa(v) })),
 	)
 	go p.Start(context.Background())
 
@@ -364,16 +327,15 @@ func TestTransformPipeAsync(t *testing.T) {
 	}
 }
 
-func TestTransformPipeWorkerPool(t *testing.T) {
-	wp := anvil.NewWorkerPool[string](2, 1)
+func TestPipeWorkerPool(t *testing.T) {
+	wp := worker.New[string](2, 1)
 	wp.Start(context.Background())
 	defer wp.Shutdown()
 
 	in, out := make(chan int), make(chan string)
-	p := NewTransformPipe(in, out,
-		WithTransformAsync[int, string](),
-		WithTransformWorkerPool[int, string](wp),
-		WithTransformMiddleware(func(v int) string { return strconv.Itoa(v * 2) }),
+	p := NewPipe(in, out,
+		WithWorkerPool[int, string](wp),
+		WithMiddleware(pure(func(v int) string { return strconv.Itoa(v * 2) })),
 	)
 	go p.Start(context.Background())
 
@@ -399,8 +361,8 @@ func TestWithConcurrencyLimitsInFlightCalls(t *testing.T) {
 	var cur, peak atomic.Int32
 	in, out := make(chan int), make(chan int, total)
 	p := NewPipe(in, out,
-		WithConcurrency[int](limit), // no WithAsync needed
-		WithMiddleware(func(v int) int {
+		WithConcurrency[int, int](limit),
+		WithMiddleware(pure(func(v int) int {
 			n := cur.Add(1)
 			for {
 				old := peak.Load()
@@ -411,7 +373,7 @@ func TestWithConcurrencyLimitsInFlightCalls(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 			cur.Add(-1)
 			return v
-		}),
+		})),
 	)
 	go p.Start(context.Background())
 
@@ -440,18 +402,18 @@ func TestWithConcurrencyRejectsNonPositive(t *testing.T) {
 			t.Fatal("expected a panic")
 		}
 	}()
-	WithConcurrency[int](0)
+	WithConcurrency[int, int](0)
 }
 
 func TestWithConcurrencyAndWorkerPoolLastWins(t *testing.T) {
-	wp := anvil.NewWorkerPool[int](1, 1)
+	wp := worker.New[int](1, 1)
 
-	p := NewPipe[int](nil, nil, WithWorkerPool(wp), WithConcurrency[int](2))
+	p := NewPipe[int](nil, nil, WithWorkerPool[int, int](wp), WithConcurrency[int, int](2))
 	if p.workerPool != nil || p.concurrency != 2 {
 		t.Fatalf("WithConcurrency after WithWorkerPool: pool=%v concurrency=%d", p.workerPool, p.concurrency)
 	}
 
-	p = NewPipe[int](nil, nil, WithConcurrency[int](2), WithWorkerPool(wp))
+	p = NewPipe[int](nil, nil, WithConcurrency[int, int](2), WithWorkerPool[int, int](wp))
 	if p.workerPool != wp || p.concurrency != 0 {
 		t.Fatalf("WithWorkerPool after WithConcurrency: pool=%v concurrency=%d", p.workerPool, p.concurrency)
 	}
@@ -474,10 +436,9 @@ func collect[T any](ch <-chan T) []T {
 }
 
 func TestMiddlewareErrSkipsFailedValuesAndReportsThem(t *testing.T) {
-	for name, opts := range map[string][]TransformPipeOption[string, int]{
+	for name, opts := range map[string][]Option[string, int]{
 		"sync":        nil,
-		"async":       {WithTransformAsync[string, int]()},
-		"concurrency": {WithTransformConcurrency[string, int](2)},
+		"concurrency": {WithConcurrency[string, int](2)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var mu sync.Mutex
@@ -485,14 +446,14 @@ func TestMiddlewareErrSkipsFailedValuesAndReportsThem(t *testing.T) {
 
 			in, out := make(chan string), make(chan int)
 			opts = append(opts,
-				WithTransformMiddlewareErr(parsePositive),
-				WithTransformErrorHandler[string, int](func(err error) {
+				WithMiddleware(parsePositive),
+				WithErrorHandler[string, int](func(err error) {
 					mu.Lock()
 					errs = append(errs, err)
 					mu.Unlock()
 				}),
 			)
-			go NewTransformPipe(in, out, opts...).Start(context.Background())
+			go NewPipe(in, out, opts...).Start(context.Background())
 
 			go func() {
 				for _, s := range []string{"1", "x", "2", "-3", "4"} {
@@ -515,7 +476,7 @@ func TestMiddlewareErrSkipsFailedValuesAndReportsThem(t *testing.T) {
 
 func TestMiddlewareErrWithoutHandlerDropsSilently(t *testing.T) {
 	in, out := make(chan string), make(chan int)
-	go NewTransformPipe(in, out, WithTransformMiddlewareErr(parsePositive)).Start(context.Background())
+	go NewPipe(in, out, WithMiddleware(parsePositive)).Start(context.Background())
 
 	go func() { in <- "bad"; in <- "7"; close(in) }()
 
@@ -529,7 +490,7 @@ func TestMiddlewareErrReceivesStartContext(t *testing.T) {
 	ctx := context.WithValue(context.Background(), key{}, 99)
 
 	in, out := make(chan int), make(chan int)
-	go NewPipe(in, out, WithMiddlewareErr(func(ctx context.Context, v int) (int, error) {
+	go NewPipe(in, out, WithMiddleware(func(ctx context.Context, v int) (int, error) {
 		return ctx.Value(key{}).(int), nil
 	})).Start(ctx)
 
@@ -541,17 +502,16 @@ func TestMiddlewareErrReceivesStartContext(t *testing.T) {
 }
 
 func TestWorkerPoolFailuresGoToErrorHandler(t *testing.T) {
-	wp := anvil.NewWorkerPool[int](1, 1)
+	wp := worker.New[int](1, 1)
 	wp.Start(context.Background())
 	defer wp.Shutdown()
 
 	errc := make(chan error, 1)
 	in, out := make(chan string), make(chan int)
-	p := NewTransformPipe(in, out,
-		WithTransformAsync[string, int](),
-		WithTransformWorkerPool[string, int](wp),
-		WithTransformMiddlewareErr(parsePositive),
-		WithTransformErrorHandler[string, int](func(err error) { errc <- err }),
+	p := NewPipe(in, out,
+		WithWorkerPool[string, int](wp),
+		WithMiddleware(parsePositive),
+		WithErrorHandler[string, int](func(err error) { errc <- err }),
 	)
 	go p.Start(context.Background())
 
@@ -565,18 +525,7 @@ func TestWorkerPoolFailuresGoToErrorHandler(t *testing.T) {
 	}
 }
 
-func TestMiddlewareAndMiddlewareErrLastWins(t *testing.T) {
-	plain := func(v int) int { return v }
-	failing := func(context.Context, int) (int, error) { return 0, errTest }
-
-	p := NewPipe[int](nil, nil, WithMiddleware(plain), WithMiddlewareErr(failing))
-	if p.middleware != nil || p.errMiddleware == nil {
-		t.Fatal("WithMiddlewareErr after WithMiddleware should replace it")
-	}
-	p = NewPipe[int](nil, nil, WithMiddlewareErr(failing), WithMiddleware(plain))
-	if p.middleware == nil || p.errMiddleware != nil {
-		t.Fatal("WithMiddleware after WithMiddlewareErr should replace it")
-	}
+// pure adapts a function that can't fail and doesn't need the context.
+func pure[In, Out any](f func(In) Out) Middleware[In, Out] {
+	return func(_ context.Context, v In) (Out, error) { return f(v), nil }
 }
-
-var errTest = errors.New("test error")

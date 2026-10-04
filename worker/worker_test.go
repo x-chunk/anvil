@@ -1,4 +1,4 @@
-package anvil
+package worker
 
 import (
 	"context"
@@ -24,7 +24,7 @@ func TestWorkerPassesContextToExec(t *testing.T) {
 	type key struct{}
 	ctx := context.WithValue(context.Background(), key{}, "v")
 
-	wp := NewWorkerPool[string](1, 1)
+	wp := New[string](1, 1)
 	wp.Start(ctx)
 	defer wp.Shutdown()
 
@@ -42,7 +42,7 @@ func TestWorkerPassesContextToExec(t *testing.T) {
 
 func TestWorkerSkipsTasksAfterCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	wp := NewWorkerPool[int](1, 1)
+	wp := New[int](1, 1)
 	wp.Start(ctx)
 	defer wp.Shutdown()
 	cancel()
@@ -65,7 +65,7 @@ func TestWorkerSkipsTasksAfterCancel(t *testing.T) {
 }
 
 func TestWorkerRecoversFromPanic(t *testing.T) {
-	wp := NewWorkerPool[int](1, 2)
+	wp := New[int](1, 2)
 	wp.Start(context.Background())
 	defer wp.Shutdown()
 
@@ -89,7 +89,7 @@ func TestWorkerRecoversFromPanic(t *testing.T) {
 }
 
 func TestWorkerNilResultChannel(t *testing.T) {
-	wp := NewWorkerPool[int](1, 2)
+	wp := New[int](1, 2)
 	wp.Start(context.Background())
 	defer wp.Shutdown()
 
@@ -107,7 +107,7 @@ func TestWorkerNilResultChannel(t *testing.T) {
 }
 
 func TestShutdownIsIdempotent(t *testing.T) {
-	wp := NewWorkerPool[int](2, 1)
+	wp := New[int](2, 1)
 	wp.Start(context.Background())
 
 	wp.Shutdown()
@@ -115,18 +115,18 @@ func TestShutdownIsIdempotent(t *testing.T) {
 }
 
 func TestSubmitAfterShutdown(t *testing.T) {
-	wp := NewWorkerPool[int](1, 1)
+	wp := New[int](1, 1)
 	wp.Start(context.Background())
 	wp.Shutdown()
 
 	err := wp.Submit(Task[int]{Exec: func(context.Context) (int, error) { return 0, nil }})
-	if !errors.Is(err, ErrPoolClosed) {
-		t.Fatalf("Submit err = %v, want ErrPoolClosed", err)
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("Submit err = %v, want ErrClosed", err)
 	}
 }
 
 func TestSubmitRacingShutdown(t *testing.T) {
-	wp := NewWorkerPool[int](2, 1)
+	wp := New[int](2, 1)
 	wp.Start(context.Background())
 
 	var wg sync.WaitGroup
@@ -141,7 +141,7 @@ func TestSubmitRacingShutdown(t *testing.T) {
 	wg.Wait()
 }
 
-func TestNewWorkerPoolRejectsNonPositiveSize(t *testing.T) {
+func TestNewRejectsNonPositiveSize(t *testing.T) {
 	for _, size := range []int{0, -1} {
 		func() {
 			defer func() {
@@ -149,13 +149,13 @@ func TestNewWorkerPoolRejectsNonPositiveSize(t *testing.T) {
 					t.Fatalf("size %d: expected panic", size)
 				}
 			}()
-			NewWorkerPool[int](size, 1)
+			New[int](size, 1)
 		}()
 	}
 }
 
 func TestStartTwiceDoesNotAddWorkers(t *testing.T) {
-	wp := NewWorkerPool[int](1, 2)
+	wp := New[int](1, 2)
 	wp.Start(context.Background())
 	wp.Start(context.Background())
 	defer wp.Shutdown()
@@ -183,7 +183,7 @@ func TestStartTwiceDoesNotAddWorkers(t *testing.T) {
 
 func TestSubmitCtxCancelWhileQueueFull(t *testing.T) {
 	// Not started, unbuffered queue: Submit would block forever.
-	wp := NewWorkerPool[int](1, 0)
+	wp := New[int](1, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -195,7 +195,7 @@ func TestSubmitCtxCancelWhileQueueFull(t *testing.T) {
 }
 
 func TestSubmitCtxAlreadyCancelled(t *testing.T) {
-	wp := NewWorkerPool[int](1, 1) // has room, but ctx is already done
+	wp := New[int](1, 1) // has room, but ctx is already done
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 

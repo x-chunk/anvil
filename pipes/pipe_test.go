@@ -276,3 +276,20 @@ func TestDeprecatedLockUnlockStillWork(t *testing.T) {
 	p.Unlock()
 	recv(t, wrote)
 }
+
+func TestLockedZeroValueIsUsable(t *testing.T) {
+	var l Locked
+	l.Wait() // not paused: must return immediately
+
+	l.set(true)
+	released := make(chan struct{})
+	go func() { l.Wait(); close(released) }()
+
+	select {
+	case <-released:
+		t.Fatal("Wait returned while paused")
+	case <-time.After(50 * time.Millisecond):
+	}
+	l.set(false)
+	recv(t, released)
+}

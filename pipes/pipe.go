@@ -29,10 +29,17 @@ type TransformPipe[In any, Out any] struct {
 
 type Middleware[In any, Out any] func(v In) Out
 
+// Locked is the pause state shared by Read and Write. Its zero value is
+// ready to use.
 type Locked struct {
+	once sync.Once
 	cond *sync.Cond
 	mu   sync.Mutex
 	is   bool
+}
+
+func (l *Locked) init() {
+	l.once.Do(func() { l.cond = sync.NewCond(&l.mu) })
 }
 
 func NewPipe[T any](in chan T, out chan T, opts ...PipeOption[T]) *Pipe[T] {
@@ -40,8 +47,6 @@ func NewPipe[T any](in chan T, out chan T, opts ...PipeOption[T]) *Pipe[T] {
 		in:  in,
 		out: out,
 	}
-
-	pipe.locked.cond = sync.NewCond(&pipe.locked.mu)
 
 	for _, opt := range opts {
 		opt(pipe)
@@ -55,8 +60,6 @@ func NewTransformPipe[In any, Out any](in chan In, out chan Out, opts ...Transfo
 		in:  in,
 		out: out,
 	}
-
-	pipe.locked.cond = sync.NewCond(&pipe.locked.mu)
 
 	for _, opt := range opts {
 		opt(pipe)
@@ -248,6 +251,7 @@ func (p *TransformPipe[In, Out]) Lock() { p.Pause() }
 func (p *TransformPipe[In, Out]) Unlock() { p.Resume() }
 
 func (l *Locked) set(paused bool) {
+	l.init()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -256,6 +260,7 @@ func (l *Locked) set(paused bool) {
 }
 
 func (l *Locked) Wait() {
+	l.init()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 

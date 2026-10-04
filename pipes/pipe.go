@@ -200,8 +200,8 @@ func send[T any](ctx context.Context, ch chan<- T, v T) bool {
 }
 
 // Read receives the next result from out. It blocks while the pipe is
-// paused (see Pause); ok is false once out is closed. Use Pull to read
-// regardless of Pause.
+// paused (see Pause); ok is false once out is closed. Code that must not be
+// affected by Pause can use the channels directly.
 func (p *Pipe[In, Out]) Read() (Out, bool) {
 	p.locked.Wait()
 
@@ -210,25 +210,15 @@ func (p *Pipe[In, Out]) Read() (Out, bool) {
 }
 
 // Write sends v to the pipe's input. It blocks while the pipe is paused (see
-// Pause). Use Push to write regardless of Pause.
+// Pause). Code that must not be affected by Pause can use the channels
+// directly.
 func (p *Pipe[In, Out]) Write(v In) {
 	p.locked.Wait()
 	p.in <- v
 }
 
-// Pull receives the next result from out like Read, but ignores Pause.
-func (p *Pipe[In, Out]) Pull() (Out, bool) {
-	v, ok := <-p.out
-	return v, ok
-}
-
-// Push sends v to the pipe's input like Write, but ignores Pause.
-func (p *Pipe[In, Out]) Push(v In) {
-	p.in <- v
-}
-
-// Pause makes Read and Write block until Resume is called. Pull, Push and
-// the processing done by Start are not affected.
+// Pause makes Read and Write block until Resume is called. The processing
+// done by Start and direct use of the channels are not affected.
 func (p *Pipe[In, Out]) Pause() {
 	p.locked.set(true)
 }

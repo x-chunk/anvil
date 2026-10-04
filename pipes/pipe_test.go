@@ -109,7 +109,7 @@ func TestPipeCancelDoesNotCloseIn(t *testing.T) {
 	}
 
 	// Writing after cancellation must not panic on a closed channel.
-	p.Push(1)
+	p.Write(1)
 }
 
 func TestStartReturnsOnCancelWithoutConsumer(t *testing.T) {
@@ -232,19 +232,6 @@ func TestPauseBlocksReadAndWriteUntilResume(t *testing.T) {
 	p.Resume()
 	if v, _ := recv(t, read); v != 9 {
 		t.Fatalf("Read = %d, want 9", v)
-	}
-}
-
-func TestPauseDoesNotAffectPushAndPull(t *testing.T) {
-	in, out := make(chan int, 1), make(chan int, 1)
-	p := NewPipe(in, out)
-	p.Pause()
-	defer p.Resume()
-
-	p.Push(1) // must not block
-	out <- 2
-	if v, _ := p.Pull(); v != 2 {
-		t.Fatalf("Pull = %d, want 2", v)
 	}
 }
 

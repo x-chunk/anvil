@@ -13,8 +13,8 @@
 //	go p.Start(ctx)
 //
 // Start runs until the input channel is closed or the context is done and
-// then closes the output channel. Write/Read (or Push/Pull) are convenience
-// wrappers around the channels; the former pair honors Pause and Resume.
+// then closes the output channel. Write and Read are convenience wrappers
+// around the channels that honor Pause and Resume.
 //
 // Processing is sequential unless WithWorkerPool or WithConcurrency
 // is used; async modes don't preserve order. A middleware

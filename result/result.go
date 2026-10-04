@@ -163,3 +163,12 @@ func (r Result[T]) MapErr(f func(err error) error) Result[T] {
 	}
 	return r
 }
+
+// String formats the result as Ok(value) or Err(error), so it reads clearly
+// in logs and with fmt verbs like %v.
+func (r Result[T]) String() string {
+	if r.err != nil {
+		return fmt.Sprintf("Err(%v)", r.err)
+	}
+	return fmt.Sprintf("Ok(%v)", r.value)
+}

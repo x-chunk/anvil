@@ -225,3 +225,22 @@ func TestAllDoesNotAliasInput(t *testing.T) {
 		t.Fatal("modifying the result of All changed the input")
 	}
 }
+
+func TestString(t *testing.T) {
+	cases := []struct {
+		got  fmt.Stringer
+		want string
+	}{
+		{Ok(42), "Ok(42)"},
+		{Ok("x"), "Ok(x)"},
+		{Err[int](errTest), "Err(test error)"},
+	}
+	for _, c := range cases {
+		if got := c.got.String(); got != c.want {
+			t.Errorf("String() = %q, want %q", got, c.want)
+		}
+	}
+	if got := fmt.Sprintf("%v", Ok(1)); got != "Ok(1)" {
+		t.Errorf("%%v = %q, want Ok(1)", got)
+	}
+}

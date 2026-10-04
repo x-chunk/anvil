@@ -48,6 +48,16 @@ func (r Result[T]) Unwrap() T {
 	return r.value
 }
 
+// Value returns the value and error as the usual Go pair. The value is the
+// zero value of T if the result holds an error.
+func (r Result[T]) Value() (T, error) {
+	if r.err != nil {
+		var zero T
+		return zero, r.err
+	}
+	return r.value, nil
+}
+
 // UnwrapOr returns the value, or the provided fallback if there's an error.
 func (r Result[T]) UnwrapOr(fallback T) T {
 	if r.err != nil {

@@ -65,3 +65,16 @@ func TestOf(t *testing.T) {
 		t.Fatalf("value of an error result leaked: %d", got)
 	}
 }
+
+func TestResultValue(t *testing.T) {
+	if v, err := Ok("x").Value(); v != "x" || err != nil {
+		t.Fatalf("Ok.Value() = %q, %v", v, err)
+	}
+	if v, err := Err[string](errTest).Value(); v != "" || !errors.Is(err, errTest) {
+		t.Fatalf("Err.Value() = %q, %v", v, err)
+	}
+	// Round trip with Of.
+	if got := Of(Ok(3).Value()).Unwrap(); got != 3 {
+		t.Fatalf("round trip = %d, want 3", got)
+	}
+}

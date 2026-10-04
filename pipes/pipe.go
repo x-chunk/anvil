@@ -162,21 +162,27 @@ func (p *Pipe[T]) Push(v T) {
 	p.in <- v
 }
 
-func (p *Pipe[T]) Lock() {
-	p.locked.mu.Lock()
-	defer p.locked.mu.Unlock()
-
-	p.locked.is = true
-	p.locked.cond.Broadcast()
+// Pause makes Read and Write block until Resume is called. Pull, Push and
+// the processing done by Start are not affected.
+func (p *Pipe[T]) Pause() {
+	p.locked.set(true)
 }
 
-func (p *Pipe[T]) Unlock() {
-	p.locked.mu.Lock()
-	defer p.locked.mu.Unlock()
-
-	p.locked.is = false
-	p.locked.cond.Broadcast()
+// Resume releases Read and Write calls blocked by Pause.
+func (p *Pipe[T]) Resume() {
+	p.locked.set(false)
 }
+
+// Lock pauses the pipe.
+//
+// Deprecated: use Pause. Despite the name this is not a mutual-exclusion
+// lock, so it doesn't behave like sync.Locker.
+func (p *Pipe[T]) Lock() { p.Pause() }
+
+// Unlock resumes the pipe.
+//
+// Deprecated: use Resume.
+func (p *Pipe[T]) Unlock() { p.Resume() }
 
 func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
 	for {
@@ -219,20 +225,34 @@ func (p *TransformPipe[In, Out]) Push(v In) {
 	p.in <- v
 }
 
-func (p *TransformPipe[In, Out]) Lock() {
-	p.locked.mu.Lock()
-	defer p.locked.mu.Unlock()
-
-	p.locked.is = true
-	p.locked.cond.Broadcast()
+// Pause makes Read and Write block until Resume is called. Pull, Push and
+// the processing done by Start are not affected.
+func (p *TransformPipe[In, Out]) Pause() {
+	p.locked.set(true)
 }
 
-func (p *TransformPipe[In, Out]) Unlock() {
-	p.locked.mu.Lock()
-	defer p.locked.mu.Unlock()
+// Resume releases Read and Write calls blocked by Pause.
+func (p *TransformPipe[In, Out]) Resume() {
+	p.locked.set(false)
+}
 
-	p.locked.is = false
-	p.locked.cond.Broadcast()
+// Lock pauses the pipe.
+//
+// Deprecated: use Pause. Despite the name this is not a mutual-exclusion
+// lock, so it doesn't behave like sync.Locker.
+func (p *TransformPipe[In, Out]) Lock() { p.Pause() }
+
+// Unlock resumes the pipe.
+//
+// Deprecated: use Resume.
+func (p *TransformPipe[In, Out]) Unlock() { p.Resume() }
+
+func (l *Locked) set(paused bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.is = paused
+	l.cond.Broadcast()
 }
 
 func (l *Locked) Wait() {

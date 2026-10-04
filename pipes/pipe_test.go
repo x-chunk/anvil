@@ -197,3 +197,82 @@ func TestPipeCancelWhileWorkerPoolQueueFull(t *testing.T) {
 		t.Fatal("Start did not return after cancel")
 	}
 }
+
+func TestPauseBlocksReadAndWriteUntilResume(t *testing.T) {
+	in, out := make(chan int, 1), make(chan int, 1)
+	p := NewPipe(in, out)
+
+	p.Pause()
+
+	wrote := make(chan struct{})
+	go func() { p.Write(1); close(wrote) }()
+
+	select {
+	case <-wrote:
+		t.Fatal("Write did not block while paused")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	p.Resume()
+	recv(t, wrote)
+
+	// Same for Read.
+	out <- 9
+	p.Pause()
+	read := make(chan int, 1)
+	go func() { v, _ := p.Read(); read <- v }()
+	select {
+	case <-read:
+		t.Fatal("Read did not block while paused")
+	case <-time.After(50 * time.Millisecond):
+	}
+	p.Resume()
+	if v, _ := recv(t, read); v != 9 {
+		t.Fatalf("Read = %d, want 9", v)
+	}
+}
+
+func TestPauseDoesNotAffectPushAndPull(t *testing.T) {
+	in, out := make(chan int, 1), make(chan int, 1)
+	p := NewPipe(in, out)
+	p.Pause()
+	defer p.Resume()
+
+	p.Push(1) // must not block
+	out <- 2
+	if v, _ := p.Pull(); v != 2 {
+		t.Fatalf("Pull = %d, want 2", v)
+	}
+}
+
+func TestTransformPipePauseResume(t *testing.T) {
+	in, out := make(chan int, 1), make(chan string, 1)
+	p := NewTransformPipe(in, out, WithTransformMiddleware(func(v int) string { return "x" }))
+
+	p.Pause()
+	wrote := make(chan struct{})
+	go func() { p.Write(1); close(wrote) }()
+	select {
+	case <-wrote:
+		t.Fatal("Write did not block while paused")
+	case <-time.After(50 * time.Millisecond):
+	}
+	p.Resume()
+	recv(t, wrote)
+}
+
+func TestDeprecatedLockUnlockStillWork(t *testing.T) {
+	in, out := make(chan int, 1), make(chan int, 1)
+	p := NewPipe(in, out)
+
+	p.Lock()
+	wrote := make(chan struct{})
+	go func() { p.Write(1); close(wrote) }()
+	select {
+	case <-wrote:
+		t.Fatal("Write did not block after Lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	p.Unlock()
+	recv(t, wrote)
+}

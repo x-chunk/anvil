@@ -35,6 +35,9 @@ type Pipe[T any] = TransformPipe[T, T]
 // convert the values.
 var ErrMiddlewareRequired = errors.New("pipes: middleware is required when input and output types differ")
 
+// Middleware converts a value of a pipe. In async modes it may be called
+// from several goroutines at once. Use ErrMiddleware if it needs the
+// context or can fail.
 type Middleware[In any, Out any] func(v In) Out
 
 // ErrMiddleware is a Middleware that receives the context passed to Start
@@ -78,6 +81,15 @@ func NewTransformPipe[In any, Out any](in chan In, out chan Out, opts ...Transfo
 
 // Start processes values until in is closed (returns nil) or ctx is done
 // (returns ctx.Err()), then waits for work still in flight and closes out.
+// It blocks, so run it in its own goroutine.
+//
+// By default values are processed one at a time, in order. In async modes
+// (WithAsync, WithWorkerPool, WithConcurrency) middleware calls overlap and
+// results reach out in completion order, not input order.
+//
+// Start also returns early with the pool's error if a worker pool set with
+// WithWorkerPool has been shut down, and with ErrMiddlewareRequired if the
+// pipe has no middleware and In differs from Out.
 func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
 	hasMiddleware := p.middleware != nil || p.errMiddleware != nil
 
@@ -202,6 +214,9 @@ func send[T any](ctx context.Context, ch chan<- T, v T) bool {
 	}
 }
 
+// Read receives the next result from out. It blocks while the pipe is
+// paused (see Pause); ok is false once out is closed. Use Pull to read
+// regardless of Pause.
 func (p *TransformPipe[In, Out]) Read() (Out, bool) {
 	p.locked.Wait()
 
@@ -209,16 +224,20 @@ func (p *TransformPipe[In, Out]) Read() (Out, bool) {
 	return v, ok
 }
 
+// Write sends v to the pipe's input. It blocks while the pipe is paused (see
+// Pause). Use Push to write regardless of Pause.
 func (p *TransformPipe[In, Out]) Write(v In) {
 	p.locked.Wait()
 	p.in <- v
 }
 
+// Pull receives the next result from out like Read, but ignores Pause.
 func (p *TransformPipe[In, Out]) Pull() (Out, bool) {
 	v, ok := <-p.out
 	return v, ok
 }
 
+// Push sends v to the pipe's input like Write, but ignores Pause.
 func (p *TransformPipe[In, Out]) Push(v In) {
 	p.in <- v
 }

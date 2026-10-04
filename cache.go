@@ -10,13 +10,16 @@ import (
 // Cache is an in-memory key-value store whose items expire ttl after they
 // were set. It is safe for concurrent use.
 //
-// Expiry is checked on Get; memory of expired items is reclaimed by
-// Cleanup or RunCleanup.
+// Expiry is checked on Get. Memory of expired items is reclaimed by Set,
+// which sweeps them at most once per max(ttl, one minute), and on demand
+// by Cleanup or RunCleanup.
 type Cache[K comparable, V any] struct {
 	mu    sync.RWMutex
 	items map[K]CacheItem[V]
 	ttl   time.Duration
 	now   func() time.Time // replaceable in tests
+
+	nextSweep time.Time // when Set should next sweep expired items
 
 	callsMu sync.Mutex
 	calls   map[K]*cacheCall[V] // in-flight GetOrSet loads
@@ -28,6 +31,10 @@ type cacheCall[V any] struct {
 	value V
 	err   error
 }
+
+// minSweepInterval bounds how often Set sweeps expired items, so a very short
+// ttl doesn't make every Set scan the whole map.
+const minSweepInterval = time.Minute
 
 var errLoaderPanicked = errors.New("anvil: cache loader panicked")
 
@@ -71,9 +78,15 @@ func (c *Cache[K, V]) Set(key K, value V) {
 func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	now := c.now()
+	if !now.Before(c.nextSweep) {
+		c.sweep(now)
+		c.nextSweep = now.Add(max(c.ttl, minSweepInterval))
+	}
 	c.items[key] = CacheItem[V]{
 		Value:     value,
-		expiresAt: c.now().Add(ttl),
+		expiresAt: now.Add(ttl),
 	}
 }
 
@@ -135,12 +148,18 @@ func (c *Cache[K, V]) Invalidate(key K) {
 // Cleanup removes all expired items and returns how many were removed.
 //
 // Expired items are never returned by Get, but they stay in memory until
-// they are overwritten, invalidated or removed by Cleanup.
+// they are overwritten, invalidated, swept by a later Set or removed by
+// Cleanup. Set already sweeps periodically, so calling Cleanup is only
+// needed to reclaim memory sooner or when the cache is no longer written to.
 func (c *Cache[K, V]) Cleanup() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := c.now()
+	return c.sweep(c.now())
+}
+
+// sweep deletes items expired at now. The caller must hold c.mu.
+func (c *Cache[K, V]) sweep(now time.Time) int {
 	removed := 0
 	for key, item := range c.items {
 		if !now.Before(item.expiresAt) {

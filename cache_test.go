@@ -263,3 +263,36 @@ func TestCacheGetOrSetLoaderPanic(t *testing.T) {
 		t.Fatalf("after panic: %d, %v", v, err)
 	}
 }
+
+func TestCacheSetSweepsExpiredItems(t *testing.T) {
+	c, clk := newTestCache[int, int](10 * time.Minute)
+	for i := 0; i < 100; i++ {
+		c.Set(i, i)
+	}
+
+	// Everything is expired and the sweep interval (the ttl) has passed.
+	clk.Advance(11 * time.Minute)
+	c.Set(1000, 1)
+
+	if n := len(c.items); n != 1 {
+		t.Fatalf("%d items in the map after a sweeping Set, want 1", n)
+	}
+}
+
+func TestCacheSetSweepIsRateLimited(t *testing.T) {
+	c, clk := newTestCache[int, int](time.Second) // sweep interval floors at a minute
+	c.Set(0, 0)                                   // first Set sweeps and schedules the next sweep
+	c.Set(1, 1)
+
+	clk.Advance(5 * time.Second) // both expired, but a sweep isn't due yet
+	c.Set(2, 2)
+	if n := len(c.items); n != 3 {
+		t.Fatalf("%d items, want 3: Set swept earlier than the minimum interval", n)
+	}
+
+	clk.Advance(time.Minute)
+	c.Set(3, 3)
+	if n := len(c.items); n != 1 {
+		t.Fatalf("%d items, want 1 after the interval elapsed", n)
+	}
+}

@@ -44,13 +44,17 @@ func ExampleNewTransformPipe() {
 }
 
 func ExampleWithMiddlewareErr() {
+	var dropped []error
+
 	in, out := make(chan string), make(chan int)
 	p := pipes.NewTransformPipe(in, out,
 		pipes.WithTransformMiddlewareErr(func(_ context.Context, s string) (int, error) {
 			return strconv.Atoi(s)
 		}),
+		// The pipe is sequential, and out is closed before the loop below
+		// ends, so reading dropped afterwards is race-free.
 		pipes.WithTransformErrorHandler[string, int](func(err error) {
-			fmt.Println("dropped:", err)
+			dropped = append(dropped, err)
 		}),
 	)
 	go p.Start(context.Background())
@@ -65,8 +69,11 @@ func ExampleWithMiddlewareErr() {
 	for v := range out {
 		fmt.Println(v)
 	}
+	for _, err := range dropped {
+		fmt.Println("dropped:", err)
+	}
 	// Output:
 	// 1
-	// dropped: strconv.Atoi: parsing "oops": invalid syntax
 	// 3
+	// dropped: strconv.Atoi: parsing "oops": invalid syntax
 }

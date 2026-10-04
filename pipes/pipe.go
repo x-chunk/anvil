@@ -27,8 +27,11 @@ type TransformPipe[In any, Out any] struct {
 	locked Locked
 }
 
-// Pipe is a TransformPipe whose input and output types are the same.
-type Pipe[T any] = TransformPipe[T, T]
+// Pipe is a TransformPipe whose input and output types are the same. It
+// embeds the TransformPipe it wraps, so all of its methods are available.
+type Pipe[T any] struct {
+	*TransformPipe[T, T]
+}
 
 // ErrMiddlewareRequired is returned by Start when a TransformPipe has no
 // middleware and its input and output types differ, so there is no way to
@@ -61,7 +64,13 @@ func (l *Locked) init() {
 // NewPipe creates a Pipe that moves values from in to out. Without a
 // middleware it forwards values unchanged.
 func NewPipe[T any](in chan T, out chan T, opts ...PipeOption[T]) *Pipe[T] {
-	return NewTransformPipe(in, out, opts...)
+	pipe := &Pipe[T]{NewTransformPipe[T, T](in, out)}
+
+	for _, opt := range opts {
+		opt(pipe)
+	}
+
+	return pipe
 }
 
 // NewTransformPipe creates a TransformPipe that moves values from in to out,

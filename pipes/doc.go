@@ -1,6 +1,6 @@
 // Package pipes connects channels through a processing step.
 //
-// A Pipe[T] (an alias of TransformPipe[T, T]) reads values from an input
+// A Pipe[T] (a TransformPipe[T, T] with a simpler set of options) reads values from an input
 // channel, passes them through an optional middleware and writes the
 // results to an output channel. TransformPipe does the same while converting
 // the value type.

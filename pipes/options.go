@@ -6,13 +6,18 @@ import "go.xchunk.org/anvil"
 type TransformPipeOption[In any, Out any] func(*TransformPipe[In, Out])
 
 // PipeOption configures a Pipe.
-type PipeOption[T any] = TransformPipeOption[T, T]
+type PipeOption[T any] func(*Pipe[T])
+
+// forPipe adapts an option of the underlying TransformPipe[T, T] to a Pipe.
+func forPipe[T any](opt TransformPipeOption[T, T]) PipeOption[T] {
+	return func(p *Pipe[T]) { opt(p.TransformPipe) }
+}
 
 // WithAsync makes a Pipe run its middleware in a separate goroutine per
 // value. Results are sent to out as they complete, so order is not kept.
 // It has no effect without a middleware.
 func WithAsync[T any]() PipeOption[T] {
-	return WithTransformAsync[T, T]()
+	return forPipe(WithTransformAsync[T, T]())
 }
 
 // WithTransformAsync is WithAsync for a TransformPipe.
@@ -28,7 +33,7 @@ func WithTransformAsync[In any, Out any]() TransformPipeOption[In, Out] {
 // WithWorkerPool and WithConcurrency are alternatives: if both are given,
 // the last one wins.
 func WithWorkerPool[T any](wp *anvil.WorkerPool[T]) PipeOption[T] {
-	return WithTransformWorkerPool[T, T](wp)
+	return forPipe(WithTransformWorkerPool[T, T](wp))
 }
 
 // WithTransformWorkerPool is WithWorkerPool for a TransformPipe.
@@ -50,7 +55,7 @@ func WithTransformWorkerPool[In any, Out any](wp *anvil.WorkerPool[Out]) Transfo
 // WithConcurrency and WithWorkerPool are alternatives: if both are given,
 // the last one wins.
 func WithConcurrency[T any](n int) PipeOption[T] {
-	return WithTransformConcurrency[T, T](n)
+	return forPipe(WithTransformConcurrency[T, T](n))
 }
 
 // WithTransformConcurrency is WithConcurrency for a TransformPipe.
@@ -67,7 +72,7 @@ func WithTransformConcurrency[In any, Out any](n int) TransformPipeOption[In, Ou
 
 // WithMiddleware sets the function applied to every value of a Pipe.
 func WithMiddleware[T any](mw Middleware[T, T]) PipeOption[T] {
-	return WithTransformMiddleware(mw)
+	return forPipe(WithTransformMiddleware(mw))
 }
 
 // WithTransformMiddleware sets the function that converts every value of a
@@ -90,7 +95,7 @@ func WithTransformMiddleware[In any, Out any](mw Middleware[In, Out]) TransformP
 // WithMiddleware and WithMiddlewareErr are alternatives: if both are given,
 // the last one wins.
 func WithMiddlewareErr[T any](mw ErrMiddleware[T, T]) PipeOption[T] {
-	return WithTransformMiddlewareErr(mw)
+	return forPipe(WithTransformMiddlewareErr(mw))
 }
 
 // WithTransformMiddlewareErr is WithMiddlewareErr for a TransformPipe.
@@ -108,7 +113,7 @@ func WithTransformMiddlewareErr[In any, Out any](mw ErrMiddleware[In, Out]) Tran
 // In async modes the handler may be called from several goroutines at once,
 // so it must be safe for concurrent use.
 func WithErrorHandler[T any](fn func(error)) PipeOption[T] {
-	return WithTransformErrorHandler[T, T](fn)
+	return forPipe(WithTransformErrorHandler[T, T](fn))
 }
 
 // WithTransformErrorHandler is WithErrorHandler for a TransformPipe.

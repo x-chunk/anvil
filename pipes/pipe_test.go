@@ -300,8 +300,8 @@ func TestLockedZeroValueIsUsable(t *testing.T) {
 	recv(t, released)
 }
 
-func TestPipeIsTransformPipe(t *testing.T) {
-	var p *TransformPipe[int, int] = NewPipe(make(chan int), make(chan int))
+func TestPipeWrapsTransformPipe(t *testing.T) {
+	var p *TransformPipe[int, int] = NewPipe(make(chan int), make(chan int)).TransformPipe
 	_ = p
 }
 

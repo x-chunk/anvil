@@ -7,7 +7,7 @@ pool, channel pipes and a `Result[T]` type.
 go get go.xchunk.org/anvil/v2
 ```
 
-Requires Go 1.24 or newer.
+Requires Go 1.27 or newer.
 
 ## What's inside
 

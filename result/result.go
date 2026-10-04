@@ -45,6 +45,25 @@ func Must[T any](value T, err error) T {
 	return Of(value, err).Unwrap()
 }
 
+// All combines results into one Result holding all the values in order. If
+// any result is an error, All returns the first one. With no arguments it
+// returns an empty, non-nil slice.
+//
+// It is a function because it works on several results at once, for
+// example to gather the responses of a batch of worker tasks.
+//
+// Experimental: see Result.
+func All[T any](results ...Result[T]) Result[[]T] {
+	values := make([]T, 0, len(results))
+	for _, r := range results {
+		if r.err != nil {
+			return Err[[]T](r.err)
+		}
+		values = append(values, r.value)
+	}
+	return Ok(values)
+}
+
 // Unwrap returns the value or panics if the result holds an error.
 //
 // The panic value is an error wrapping the result's error, so a recovered

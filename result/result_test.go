@@ -198,3 +198,30 @@ func TestMapErr(t *testing.T) {
 		t.Fatalf("got %+v, want the original error kept", kept)
 	}
 }
+
+func TestAll(t *testing.T) {
+	got := All(Ok(1), Ok(2), Ok(3)).Unwrap()
+	if fmt.Sprint(got) != "[1 2 3]" {
+		t.Fatalf("All = %v, want [1 2 3]", got)
+	}
+
+	empty := All[int]().Unwrap()
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("All() = %#v, want an empty non-nil slice", empty)
+	}
+
+	other := errors.New("other")
+	r := All(Ok(1), Err[int](errTest), Err[int](other))
+	if !errors.Is(r.Error(), errTest) {
+		t.Fatalf("All returned %v, want the first error", r.Error())
+	}
+}
+
+func TestAllDoesNotAliasInput(t *testing.T) {
+	in := []Result[int]{Ok(1), Ok(2)}
+	out := All(in...).Unwrap()
+	out[0] = 99
+	if v, _ := in[0].Value(); v != 1 {
+		t.Fatal("modifying the result of All changed the input")
+	}
+}

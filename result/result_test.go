@@ -2,6 +2,7 @@ package result
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -129,5 +130,117 @@ func TestAndThen(t *testing.T) {
 	}
 	if !errors.Is(r.Error(), errTest) {
 		t.Fatalf("AndThen did not pass the error through: %v", r.Error())
+	}
+}
+
+func TestUnwrapOrElse(t *testing.T) {
+	called := false
+	got := Ok(1).UnwrapOrElse(func(error) int { called = true; return 9 })
+	if got != 1 || called {
+		t.Fatalf("Ok: got %d, fallback called = %v; want 1, false", got, called)
+	}
+
+	var seen error
+	got = Err[int](errTest).UnwrapOrElse(func(err error) int { seen = err; return 9 })
+	if got != 9 || !errors.Is(seen, errTest) {
+		t.Fatalf("Err: got %d, fallback saw %v; want 9, errTest", got, seen)
+	}
+}
+
+func TestOrElse(t *testing.T) {
+	called := false
+	r := Ok(1).OrElse(func(error) Result[int] { called = true; return Ok(9) })
+	if r.Unwrap() != 1 || called {
+		t.Fatalf("Ok: got %+v, fallback called = %v", r, called)
+	}
+
+	if got := Err[int](errTest).OrElse(func(error) Result[int] { return Ok(9) }).Unwrap(); got != 9 {
+		t.Fatalf("recovered value = %d, want 9", got)
+	}
+
+	other := errors.New("other")
+	r = Err[int](errTest).OrElse(func(error) Result[int] { return Err[int](other) })
+	if !errors.Is(r.Error(), other) {
+		t.Fatalf("a failing fallback should replace the error, got %v", r.Error())
+	}
+
+	// The fallback gets the original error.
+	var seen error
+	Err[int](errTest).OrElse(func(err error) Result[int] { seen = err; return Ok(0) })
+	if !errors.Is(seen, errTest) {
+		t.Fatalf("fallback saw %v, want errTest", seen)
+	}
+}
+
+func TestMapErr(t *testing.T) {
+	called := false
+	r := Ok(1).MapErr(func(err error) error { called = true; return err })
+	if r.Unwrap() != 1 || called {
+		t.Fatalf("Ok: got %+v, f called = %v", r, called)
+	}
+
+	wrapped := Err[int](errTest).MapErr(func(err error) error { return fmt.Errorf("step: %w", err) })
+	if !errors.Is(wrapped.Error(), errTest) || wrapped.Error().Error() != "step: test error" {
+		t.Fatalf("got %v, want the wrapped error", wrapped.Error())
+	}
+
+	// Steps can attach their own context.
+	r2 := Err[int](errTest).
+		MapErr(func(err error) error { return fmt.Errorf("read: %w", err) }).
+		MapErr(func(err error) error { return fmt.Errorf("load config: %w", err) })
+	if got := r2.Error().Error(); got != "load config: read: test error" {
+		t.Fatalf("got %q", got)
+	}
+
+	// A nil from f must not turn a failure into a success.
+	kept := Err[int](errTest).MapErr(func(error) error { return nil })
+	if kept.IsOk() || !errors.Is(kept.Error(), errTest) {
+		t.Fatalf("got %+v, want the original error kept", kept)
+	}
+}
+
+func TestAll(t *testing.T) {
+	got := All(Ok(1), Ok(2), Ok(3)).Unwrap()
+	if fmt.Sprint(got) != "[1 2 3]" {
+		t.Fatalf("All = %v, want [1 2 3]", got)
+	}
+
+	empty := All[int]().Unwrap()
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("All() = %#v, want an empty non-nil slice", empty)
+	}
+
+	other := errors.New("other")
+	r := All(Ok(1), Err[int](errTest), Err[int](other))
+	if !errors.Is(r.Error(), errTest) {
+		t.Fatalf("All returned %v, want the first error", r.Error())
+	}
+}
+
+func TestAllDoesNotAliasInput(t *testing.T) {
+	in := []Result[int]{Ok(1), Ok(2)}
+	out := All(in...).Unwrap()
+	out[0] = 99
+	if v, _ := in[0].Value(); v != 1 {
+		t.Fatal("modifying the result of All changed the input")
+	}
+}
+
+func TestString(t *testing.T) {
+	cases := []struct {
+		got  fmt.Stringer
+		want string
+	}{
+		{Ok(42), "Ok(42)"},
+		{Ok("x"), "Ok(x)"},
+		{Err[int](errTest), "Err(test error)"},
+	}
+	for _, c := range cases {
+		if got := c.got.String(); got != c.want {
+			t.Errorf("String() = %q, want %q", got, c.want)
+		}
+	}
+	if got := fmt.Sprintf("%v", Ok(1)); got != "Ok(1)" {
+		t.Errorf("%%v = %q, want Ok(1)", got)
 	}
 }

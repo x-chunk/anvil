@@ -17,7 +17,7 @@ Requires Go 1.27 or newer. The code of the previous major version lives on the
 | [`cache`](cache) | In-memory TTL cache, safe for concurrent use. `GetOrSet` shares one load between concurrent callers, `SetWithTTL` sets a per-item lifetime, expired items are swept automatically. A TTL of 0 means no expiry. |
 | [`worker`](worker) | `Pool`: a fixed number of workers fed from a bounded queue. Context-aware, recovers from panics in tasks. |
 | [`pipes`](pipes) | `Pipe[In, Out]`: connects channels through a (possibly concurrent, possibly fallible) processing step, with `Pause`/`Resume`. |
-| [`result`](result) | `Result[T]`: a value or an error, with `Of`, `Map`, `AndThen`, `Must`. **Experimental** — the API may change in any release. |
+| [`result`](result) | `Result[T]`: a value or an error, with `Of`, `Map`, `AndThen`, `OrElse`, `MapErr`, `UnwrapOrElse`, `All`, `Must`. **Experimental** — the API may change in any release. |
 
 ## Examples
 

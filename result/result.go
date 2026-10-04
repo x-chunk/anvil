@@ -45,6 +45,25 @@ func Must[T any](value T, err error) T {
 	return Of(value, err).Unwrap()
 }
 
+// All combines results into one Result holding all the values in order. If
+// any result is an error, All returns the first one. With no arguments it
+// returns an empty, non-nil slice.
+//
+// It is a function because it works on several results at once, for
+// example to gather the responses of a batch of worker tasks.
+//
+// Experimental: see Result.
+func All[T any](results ...Result[T]) Result[[]T] {
+	values := make([]T, 0, len(results))
+	for _, r := range results {
+		if r.err != nil {
+			return Err[[]T](r.err)
+		}
+		values = append(values, r.value)
+	}
+	return Ok(values)
+}
+
 // Unwrap returns the value or panics if the result holds an error.
 //
 // The panic value is an error wrapping the result's error, so a recovered
@@ -70,6 +89,16 @@ func (r Result[T]) Value() (T, error) {
 func (r Result[T]) UnwrapOr(fallback T) T {
 	if r.err != nil {
 		return fallback
+	}
+	return r.value
+}
+
+// UnwrapOrElse returns the value, or the result of calling fallback with the
+// error. Unlike UnwrapOr, the fallback is computed only when needed, and it
+// can look at the error.
+func (r Result[T]) UnwrapOrElse(fallback func(err error) T) T {
+	if r.err != nil {
+		return fallback(r.err)
 	}
 	return r.value
 }
@@ -105,4 +134,41 @@ func (r Result[T]) AndThen[U any](f func(T) Result[U]) Result[U] {
 		return Err[U](r.err)
 	}
 	return f(r.value)
+}
+
+// OrElse returns r if it is successful, and otherwise the Result returned by
+// f, which receives the error. It is the way to fall back to another source
+// that can fail too, without leaving the chain.
+//
+// Experimental: see Result.
+func (r Result[T]) OrElse(f func(err error) Result[T]) Result[T] {
+	if r.err == nil {
+		return r
+	}
+	return f(r.err)
+}
+
+// MapErr applies f to the error of r, typically to add context about the
+// step that failed, and leaves a successful result alone. If f returns nil
+// the original error is kept, so a failure never turns into a success.
+//
+// Experimental: MapErr is newer than the rest of Result and its behavior may
+// still change, see also Result.
+func (r Result[T]) MapErr(f func(err error) error) Result[T] {
+	if r.err == nil {
+		return r
+	}
+	if err := f(r.err); err != nil {
+		return Err[T](err)
+	}
+	return r
+}
+
+// String formats the result as Ok(value) or Err(error), so it reads clearly
+// in logs and with fmt verbs like %v.
+func (r Result[T]) String() string {
+	if r.err != nil {
+		return fmt.Sprintf("Err(%v)", r.err)
+	}
+	return fmt.Sprintf("Ok(%v)", r.value)
 }

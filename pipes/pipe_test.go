@@ -3,9 +3,11 @@ package pipes
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -454,3 +456,127 @@ func TestWithConcurrencyAndWorkerPoolLastWins(t *testing.T) {
 		t.Fatalf("WithWorkerPool after WithConcurrency: pool=%v concurrency=%d", p.workerPool, p.concurrency)
 	}
 }
+
+func parsePositive(_ context.Context, s string) (int, error) {
+	n, err := strconv.Atoi(s)
+	if err == nil && n < 0 {
+		err = errors.New("negative")
+	}
+	return n, err
+}
+
+func collect[T any](ch <-chan T) []T {
+	var all []T
+	for v := range ch {
+		all = append(all, v)
+	}
+	return all
+}
+
+func TestMiddlewareErrSkipsFailedValuesAndReportsThem(t *testing.T) {
+	for name, opts := range map[string][]TransformPipeOption[string, int]{
+		"sync":        nil,
+		"async":       {WithTransformAsync[string, int]()},
+		"concurrency": {WithTransformConcurrency[string, int](2)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var mu sync.Mutex
+			var errs []error
+
+			in, out := make(chan string), make(chan int)
+			opts = append(opts,
+				WithTransformMiddlewareErr(parsePositive),
+				WithTransformErrorHandler[string, int](func(err error) {
+					mu.Lock()
+					errs = append(errs, err)
+					mu.Unlock()
+				}),
+			)
+			go NewTransformPipe(in, out, opts...).Start(context.Background())
+
+			go func() {
+				for _, s := range []string{"1", "x", "2", "-3", "4"} {
+					in <- s
+				}
+				close(in)
+			}()
+
+			got := collect(out)
+			sort.Ints(got)
+			if fmt.Sprint(got) != "[1 2 4]" {
+				t.Fatalf("results = %v, want [1 2 4]", got)
+			}
+			if len(errs) != 2 {
+				t.Fatalf("handler got %d errors (%v), want 2", len(errs), errs)
+			}
+		})
+	}
+}
+
+func TestMiddlewareErrWithoutHandlerDropsSilently(t *testing.T) {
+	in, out := make(chan string), make(chan int)
+	go NewTransformPipe(in, out, WithTransformMiddlewareErr(parsePositive)).Start(context.Background())
+
+	go func() { in <- "bad"; in <- "7"; close(in) }()
+
+	if got := collect(out); fmt.Sprint(got) != "[7]" {
+		t.Fatalf("results = %v, want [7]", got)
+	}
+}
+
+func TestMiddlewareErrReceivesStartContext(t *testing.T) {
+	type key struct{}
+	ctx := context.WithValue(context.Background(), key{}, 99)
+
+	in, out := make(chan int), make(chan int)
+	go NewPipe(in, out, WithMiddlewareErr(func(ctx context.Context, v int) (int, error) {
+		return ctx.Value(key{}).(int), nil
+	})).Start(ctx)
+
+	in <- 0
+	if got, _ := recv(t, out); got != 99 {
+		t.Fatalf("got %d, want the value from the Start context", got)
+	}
+	close(in)
+}
+
+func TestWorkerPoolFailuresGoToErrorHandler(t *testing.T) {
+	wp := anvil.NewWorkerPool[int](1, 1)
+	wp.Start(context.Background())
+	defer wp.Shutdown()
+
+	errc := make(chan error, 1)
+	in, out := make(chan string), make(chan int)
+	p := NewTransformPipe(in, out,
+		WithTransformAsync[string, int](),
+		WithTransformWorkerPool[string, int](wp),
+		WithTransformMiddlewareErr(parsePositive),
+		WithTransformErrorHandler[string, int](func(err error) { errc <- err }),
+	)
+	go p.Start(context.Background())
+
+	go func() { in <- "nope"; in <- "5"; close(in) }()
+
+	if got := collect(out); fmt.Sprint(got) != "[5]" {
+		t.Fatalf("results = %v, want [5]", got)
+	}
+	if err, _ := recv(t, errc); err == nil {
+		t.Fatal("handler got a nil error")
+	}
+}
+
+func TestMiddlewareAndMiddlewareErrLastWins(t *testing.T) {
+	plain := func(v int) int { return v }
+	failing := func(context.Context, int) (int, error) { return 0, errTest }
+
+	p := NewPipe[int](nil, nil, WithMiddleware(plain), WithMiddlewareErr(failing))
+	if p.middleware != nil || p.errMiddleware == nil {
+		t.Fatal("WithMiddlewareErr after WithMiddleware should replace it")
+	}
+	p = NewPipe[int](nil, nil, WithMiddlewareErr(failing), WithMiddleware(plain))
+	if p.middleware == nil || p.errMiddleware != nil {
+		t.Fatal("WithMiddleware after WithMiddlewareErr should replace it")
+	}
+}
+
+var errTest = errors.New("test error")

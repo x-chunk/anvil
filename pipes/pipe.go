@@ -15,9 +15,11 @@ type TransformPipe[In any, Out any] struct {
 	in  chan In
 	out chan Out
 
-	middleware Middleware[In, Out]
-	workerPool *anvil.WorkerPool[Out]
-	isAsync    bool
+	middleware    Middleware[In, Out]
+	errMiddleware ErrMiddleware[In, Out]
+	onError       func(error)
+	workerPool    *anvil.WorkerPool[Out]
+	isAsync       bool
 	// concurrency limits in-flight middleware calls of an async pipe that
 	// has no worker pool; 0 means unlimited.
 	concurrency int
@@ -34,6 +36,11 @@ type Pipe[T any] = TransformPipe[T, T]
 var ErrMiddlewareRequired = errors.New("pipes: middleware is required when input and output types differ")
 
 type Middleware[In any, Out any] func(v In) Out
+
+// ErrMiddleware is a Middleware that receives the context passed to Start
+// and can fail. A value for which it returns an error is dropped, and the
+// error is passed to the handler set with WithErrorHandler, if any.
+type ErrMiddleware[In any, Out any] func(ctx context.Context, v In) (Out, error)
 
 // Locked is the pause state shared by Read and Write. Its zero value is
 // ready to use.
@@ -72,18 +79,34 @@ func NewTransformPipe[In any, Out any](in chan In, out chan Out, opts ...Transfo
 // Start processes values until in is closed (returns nil) or ctx is done
 // (returns ctx.Err()), then waits for work still in flight and closes out.
 func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
-	middleware := p.middleware
-	if middleware == nil {
+	hasMiddleware := p.middleware != nil || p.errMiddleware != nil
+
+	process := p.errMiddleware
+	switch {
+	case process != nil:
+	case p.middleware != nil:
+		process = func(_ context.Context, v In) (Out, error) { return p.middleware(v), nil }
+	case reflect.TypeFor[In]() == reflect.TypeFor[Out]():
 		// Without a middleware values are forwarded as they are, which is
 		// only possible when both channels carry the same type.
-		if reflect.TypeFor[In]() != reflect.TypeFor[Out]() {
-			close(p.out)
-			return ErrMiddlewareRequired
-		}
-		middleware = func(v In) Out {
+		process = func(_ context.Context, v In) (Out, error) {
 			out, _ := any(v).(Out)
-			return out
+			return out, nil
 		}
+	default:
+		close(p.out)
+		return ErrMiddlewareRequired
+	}
+
+	// handle reports whether the value should be forwarded.
+	handle := func(err error) bool {
+		if err == nil {
+			return true
+		}
+		if p.onError != nil {
+			p.onError(err)
+		}
+		return false
 	}
 
 	var sem chan struct{}
@@ -104,8 +127,12 @@ func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
 				return nil
 			}
 
-			if !p.isAsync || p.middleware == nil {
-				if !send(ctx, p.out, middleware(v)) {
+			if !p.isAsync || !hasMiddleware {
+				out, err := process(ctx, v)
+				if !handle(err) {
+					continue
+				}
+				if !send(ctx, p.out, out) {
 					return ctx.Err()
 				}
 				continue
@@ -118,7 +145,7 @@ func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
 				err := p.workerPool.SubmitCtx(ctx, anvil.Task[Out]{
 					Result: resultCh,
 					Exec: func(ctx context.Context) (Out, error) {
-						return middleware(v), nil
+						return process(ctx, v)
 					},
 				})
 				if err != nil {
@@ -130,7 +157,9 @@ func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
 					defer inflight.Done()
 					select {
 					case res := <-resultCh:
-						send(ctx, p.out, res.Value)
+						if handle(res.Err) {
+							send(ctx, p.out, res.Value)
+						}
 					case <-ctx.Done():
 					}
 				}()
@@ -152,7 +181,10 @@ func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
 				if sem != nil {
 					defer func() { <-sem }()
 				}
-				send(ctx, p.out, middleware(v))
+				out, err := process(ctx, v)
+				if handle(err) {
+					send(ctx, p.out, out)
+				}
 			}()
 		case <-ctx.Done():
 			return ctx.Err()

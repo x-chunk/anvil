@@ -72,8 +72,48 @@ func WithMiddleware[T any](mw Middleware[T, T]) PipeOption[T] {
 
 // WithTransformMiddleware sets the function that converts every value of a
 // TransformPipe.
+//
+// WithMiddleware and WithMiddlewareErr are alternatives: if both are given,
+// the last one wins.
 func WithTransformMiddleware[In any, Out any](mw Middleware[In, Out]) TransformPipeOption[In, Out] {
 	return func(p *TransformPipe[In, Out]) {
 		p.middleware = mw
+		p.errMiddleware = nil
+	}
+}
+
+// WithMiddlewareErr sets a middleware that receives the context passed to
+// Start and may return an error. A value that fails is dropped instead of
+// being sent to out, and the error goes to the handler set with
+// WithErrorHandler (it is ignored if there is none).
+//
+// WithMiddleware and WithMiddlewareErr are alternatives: if both are given,
+// the last one wins.
+func WithMiddlewareErr[T any](mw ErrMiddleware[T, T]) PipeOption[T] {
+	return WithTransformMiddlewareErr(mw)
+}
+
+// WithTransformMiddlewareErr is WithMiddlewareErr for a TransformPipe.
+func WithTransformMiddlewareErr[In any, Out any](mw ErrMiddleware[In, Out]) TransformPipeOption[In, Out] {
+	return func(p *TransformPipe[In, Out]) {
+		p.errMiddleware = mw
+		p.middleware = nil
+	}
+}
+
+// WithErrorHandler sets the function called with every error that makes a
+// Pipe drop a value: errors returned by a WithMiddlewareErr middleware, and
+// failures reported by a worker pool (such as a panic in the middleware).
+//
+// In async modes the handler may be called from several goroutines at once,
+// so it must be safe for concurrent use.
+func WithErrorHandler[T any](fn func(error)) PipeOption[T] {
+	return WithTransformErrorHandler[T, T](fn)
+}
+
+// WithTransformErrorHandler is WithErrorHandler for a TransformPipe.
+func WithTransformErrorHandler[In any, Out any](fn func(error)) TransformPipeOption[In, Out] {
+	return func(p *TransformPipe[In, Out]) {
+		p.onError = fn
 	}
 }

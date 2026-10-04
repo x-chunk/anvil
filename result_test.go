@@ -52,3 +52,16 @@ func TestResultUnwrapPanicWrapsError(t *testing.T) {
 	}()
 	Err[int](errTest).Unwrap()
 }
+
+func TestOf(t *testing.T) {
+	if r := Of(5, nil); !r.IsOk() || r.Unwrap() != 5 {
+		t.Fatalf("Of(5, nil) = %+v", r)
+	}
+	r := Of(5, errTest)
+	if r.IsOk() || !errors.Is(r.Error(), errTest) {
+		t.Fatalf("Of(5, err) = %+v, want error result", r)
+	}
+	if got := r.UnwrapOr(-1); got != -1 {
+		t.Fatalf("value of an error result leaked: %d", got)
+	}
+}

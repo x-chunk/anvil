@@ -25,6 +25,18 @@ func Err[T any](err error) Result[T] {
 	return Result[T]{err: err}
 }
 
+// Of wraps the usual Go (value, error) pair into a Result, so a call like
+// Of(strconv.Atoi(s)) works directly. If err is non-nil the value is
+// discarded.
+//
+// Experimental: see Result.
+func Of[T any](value T, err error) Result[T] {
+	if err != nil {
+		return Err[T](err)
+	}
+	return Ok(value)
+}
+
 // Unwrap returns the value or panics if the result holds an error.
 //
 // The panic value is an error wrapping the result's error, so a recovered

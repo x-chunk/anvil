@@ -2,27 +2,18 @@ package pipes
 
 import "go.xchunk.org/anvil/v2/worker"
 
-// TransformPipeOption configures a TransformPipe.
-type TransformPipeOption[In any, Out any] func(*TransformPipe[In, Out])
-
-// PipeOption configures a Pipe.
-type PipeOption[T any] func(*Pipe[T])
-
-// forPipe adapts an option of the underlying TransformPipe[T, T] to a Pipe.
-func forPipe[T any](opt TransformPipeOption[T, T]) PipeOption[T] {
-	return func(p *Pipe[T]) { opt(p.TransformPipe) }
-}
+// Option configures a Pipe.
+//
+// Options that don't mention In or Out in their arguments, such as
+// WithConcurrency, need the type arguments spelled out:
+// WithConcurrency[int, string](4).
+type Option[In any, Out any] func(*Pipe[In, Out])
 
 // WithAsync makes a Pipe run its middleware in a separate goroutine per
 // value. Results are sent to out as they complete, so order is not kept.
 // It has no effect without a middleware.
-func WithAsync[T any]() PipeOption[T] {
-	return forPipe(WithTransformAsync[T, T]())
-}
-
-// WithTransformAsync is WithAsync for a TransformPipe.
-func WithTransformAsync[In any, Out any]() TransformPipeOption[In, Out] {
-	return func(p *TransformPipe[In, Out]) {
+func WithAsync[In any, Out any]() Option[In, Out] {
+	return func(p *Pipe[In, Out]) {
 		p.isAsync = true
 	}
 }
@@ -32,16 +23,8 @@ func WithTransformAsync[In any, Out any]() TransformPipeOption[In, Out] {
 //
 // WithWorkerPool and WithConcurrency are alternatives: if both are given,
 // the last one wins.
-func WithWorkerPool[T any](wp *worker.Pool[T]) PipeOption[T] {
-	return forPipe(WithTransformWorkerPool[T, T](wp))
-}
-
-// WithTransformWorkerPool is WithWorkerPool for a TransformPipe.
-//
-// WithWorkerPool and WithConcurrency are alternatives: if both are given,
-// the last one wins.
-func WithTransformWorkerPool[In any, Out any](wp *worker.Pool[Out]) TransformPipeOption[In, Out] {
-	return func(p *TransformPipe[In, Out]) {
+func WithWorkerPool[In any, Out any](wp *worker.Pool[Out]) Option[In, Out] {
+	return func(p *Pipe[In, Out]) {
 		p.workerPool = wp
 		p.concurrency = 0
 	}
@@ -54,34 +37,23 @@ func WithTransformWorkerPool[In any, Out any](wp *worker.Pool[Out]) TransformPip
 //
 // WithConcurrency and WithWorkerPool are alternatives: if both are given,
 // the last one wins.
-func WithConcurrency[T any](n int) PipeOption[T] {
-	return forPipe(WithTransformConcurrency[T, T](n))
-}
-
-// WithTransformConcurrency is WithConcurrency for a TransformPipe.
-func WithTransformConcurrency[In any, Out any](n int) TransformPipeOption[In, Out] {
+func WithConcurrency[In any, Out any](n int) Option[In, Out] {
 	if n <= 0 {
 		panic("pipes: concurrency must be positive")
 	}
-	return func(p *TransformPipe[In, Out]) {
+	return func(p *Pipe[In, Out]) {
 		p.isAsync = true
 		p.concurrency = n
 		p.workerPool = nil
 	}
 }
 
-// WithMiddleware sets the function applied to every value of a Pipe.
-func WithMiddleware[T any](mw Middleware[T, T]) PipeOption[T] {
-	return forPipe(WithTransformMiddleware(mw))
-}
-
-// WithTransformMiddleware sets the function that converts every value of a
-// TransformPipe.
+// WithMiddleware sets the function that converts every value of a Pipe.
 //
 // WithMiddleware and WithMiddlewareErr are alternatives: if both are given,
 // the last one wins.
-func WithTransformMiddleware[In any, Out any](mw Middleware[In, Out]) TransformPipeOption[In, Out] {
-	return func(p *TransformPipe[In, Out]) {
+func WithMiddleware[In any, Out any](mw Middleware[In, Out]) Option[In, Out] {
+	return func(p *Pipe[In, Out]) {
 		p.middleware = mw
 		p.errMiddleware = nil
 	}
@@ -94,13 +66,8 @@ func WithTransformMiddleware[In any, Out any](mw Middleware[In, Out]) TransformP
 //
 // WithMiddleware and WithMiddlewareErr are alternatives: if both are given,
 // the last one wins.
-func WithMiddlewareErr[T any](mw ErrMiddleware[T, T]) PipeOption[T] {
-	return forPipe(WithTransformMiddlewareErr(mw))
-}
-
-// WithTransformMiddlewareErr is WithMiddlewareErr for a TransformPipe.
-func WithTransformMiddlewareErr[In any, Out any](mw ErrMiddleware[In, Out]) TransformPipeOption[In, Out] {
-	return func(p *TransformPipe[In, Out]) {
+func WithMiddlewareErr[In any, Out any](mw ErrMiddleware[In, Out]) Option[In, Out] {
+	return func(p *Pipe[In, Out]) {
 		p.errMiddleware = mw
 		p.middleware = nil
 	}
@@ -112,13 +79,8 @@ func WithTransformMiddlewareErr[In any, Out any](mw ErrMiddleware[In, Out]) Tran
 //
 // In async modes the handler may be called from several goroutines at once,
 // so it must be safe for concurrent use.
-func WithErrorHandler[T any](fn func(error)) PipeOption[T] {
-	return forPipe(WithTransformErrorHandler[T, T](fn))
-}
-
-// WithTransformErrorHandler is WithErrorHandler for a TransformPipe.
-func WithTransformErrorHandler[In any, Out any](fn func(error)) TransformPipeOption[In, Out] {
-	return func(p *TransformPipe[In, Out]) {
+func WithErrorHandler[In any, Out any](fn func(error)) Option[In, Out] {
+	return func(p *Pipe[In, Out]) {
 		p.onError = fn
 	}
 }

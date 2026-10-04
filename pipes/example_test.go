@@ -27,10 +27,10 @@ func ExampleNewPipe() {
 	// 20
 }
 
-func ExampleNewTransformPipe() {
+func ExampleNewPipe_convert() {
 	in, out := make(chan int), make(chan string)
-	p := pipes.NewTransformPipe(in, out,
-		pipes.WithTransformMiddleware(func(v int) string { return "#" + strconv.Itoa(v) }),
+	p := pipes.NewPipe(in, out,
+		pipes.WithMiddleware(func(v int) string { return "#" + strconv.Itoa(v) }),
 	)
 	go p.Start(context.Background())
 
@@ -47,13 +47,13 @@ func ExampleWithMiddlewareErr() {
 	var dropped []error
 
 	in, out := make(chan string), make(chan int)
-	p := pipes.NewTransformPipe(in, out,
-		pipes.WithTransformMiddlewareErr(func(_ context.Context, s string) (int, error) {
+	p := pipes.NewPipe(in, out,
+		pipes.WithMiddlewareErr(func(_ context.Context, s string) (int, error) {
 			return strconv.Atoi(s)
 		}),
 		// The pipe is sequential, and out is closed before the loop below
 		// ends, so reading dropped afterwards is race-free.
-		pipes.WithTransformErrorHandler[string, int](func(err error) {
+		pipes.WithErrorHandler[string, int](func(err error) {
 			dropped = append(dropped, err)
 		}),
 	)

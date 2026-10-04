@@ -9,9 +9,9 @@ import (
 	"go.xchunk.org/anvil/v2/worker"
 )
 
-// TransformPipe reads values of type In from a channel, runs them through a
+// Pipe reads values of type In from a channel, runs them through a
 // middleware and writes the results of type Out to another channel.
-type TransformPipe[In any, Out any] struct {
+type Pipe[In any, Out any] struct {
 	in  chan In
 	out chan Out
 
@@ -27,13 +27,7 @@ type TransformPipe[In any, Out any] struct {
 	locked Locked
 }
 
-// Pipe is a TransformPipe whose input and output types are the same. It
-// embeds the TransformPipe it wraps, so all of its methods are available.
-type Pipe[T any] struct {
-	*TransformPipe[T, T]
-}
-
-// ErrMiddlewareRequired is returned by Start when a TransformPipe has no
+// ErrMiddlewareRequired is returned by Start when a Pipe has no
 // middleware and its input and output types differ, so there is no way to
 // convert the values.
 var ErrMiddlewareRequired = errors.New("pipes: middleware is required when input and output types differ")
@@ -62,21 +56,10 @@ func (l *Locked) init() {
 }
 
 // NewPipe creates a Pipe that moves values from in to out. Without a
-// middleware it forwards values unchanged.
-func NewPipe[T any](in chan T, out chan T, opts ...PipeOption[T]) *Pipe[T] {
-	pipe := &Pipe[T]{NewTransformPipe[T, T](in, out)}
-
-	for _, opt := range opts {
-		opt(pipe)
-	}
-
-	return pipe
-}
-
-// NewTransformPipe creates a TransformPipe that moves values from in to out,
-// converting them with the configured middleware.
-func NewTransformPipe[In any, Out any](in chan In, out chan Out, opts ...TransformPipeOption[In, Out]) *TransformPipe[In, Out] {
-	pipe := &TransformPipe[In, Out]{
+// middleware it forwards values unchanged, which requires In and Out to be
+// the same type.
+func NewPipe[In any, Out any](in chan In, out chan Out, opts ...Option[In, Out]) *Pipe[In, Out] {
+	pipe := &Pipe[In, Out]{
 		in:  in,
 		out: out,
 	}
@@ -99,7 +82,7 @@ func NewTransformPipe[In any, Out any](in chan In, out chan Out, opts ...Transfo
 // Start also returns early with the pool's error if a worker pool set with
 // WithWorkerPool has been shut down, and with ErrMiddlewareRequired if the
 // pipe has no middleware and In differs from Out.
-func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
+func (p *Pipe[In, Out]) Start(ctx context.Context) error {
 	hasMiddleware := p.middleware != nil || p.errMiddleware != nil
 
 	process := p.errMiddleware
@@ -226,7 +209,7 @@ func send[T any](ctx context.Context, ch chan<- T, v T) bool {
 // Read receives the next result from out. It blocks while the pipe is
 // paused (see Pause); ok is false once out is closed. Use Pull to read
 // regardless of Pause.
-func (p *TransformPipe[In, Out]) Read() (Out, bool) {
+func (p *Pipe[In, Out]) Read() (Out, bool) {
 	p.locked.Wait()
 
 	v, ok := <-p.out
@@ -235,30 +218,30 @@ func (p *TransformPipe[In, Out]) Read() (Out, bool) {
 
 // Write sends v to the pipe's input. It blocks while the pipe is paused (see
 // Pause). Use Push to write regardless of Pause.
-func (p *TransformPipe[In, Out]) Write(v In) {
+func (p *Pipe[In, Out]) Write(v In) {
 	p.locked.Wait()
 	p.in <- v
 }
 
 // Pull receives the next result from out like Read, but ignores Pause.
-func (p *TransformPipe[In, Out]) Pull() (Out, bool) {
+func (p *Pipe[In, Out]) Pull() (Out, bool) {
 	v, ok := <-p.out
 	return v, ok
 }
 
 // Push sends v to the pipe's input like Write, but ignores Pause.
-func (p *TransformPipe[In, Out]) Push(v In) {
+func (p *Pipe[In, Out]) Push(v In) {
 	p.in <- v
 }
 
 // Pause makes Read and Write block until Resume is called. Pull, Push and
 // the processing done by Start are not affected.
-func (p *TransformPipe[In, Out]) Pause() {
+func (p *Pipe[In, Out]) Pause() {
 	p.locked.set(true)
 }
 
 // Resume releases Read and Write calls blocked by Pause.
-func (p *TransformPipe[In, Out]) Resume() {
+func (p *Pipe[In, Out]) Resume() {
 	p.locked.set(false)
 }
 
@@ -266,12 +249,12 @@ func (p *TransformPipe[In, Out]) Resume() {
 //
 // Deprecated: use Pause. Despite the name this is not a mutual-exclusion
 // lock, so it doesn't behave like sync.Locker.
-func (p *TransformPipe[In, Out]) Lock() { p.Pause() }
+func (p *Pipe[In, Out]) Lock() { p.Pause() }
 
 // Unlock resumes the pipe.
 //
 // Deprecated: use Resume.
-func (p *TransformPipe[In, Out]) Unlock() { p.Resume() }
+func (p *Pipe[In, Out]) Unlock() { p.Resume() }
 
 func (l *Locked) set(paused bool) {
 	l.init()

@@ -26,9 +26,12 @@ func Err[T any](err error) Result[T] {
 }
 
 // Unwrap returns the value or panics if the result holds an error.
+//
+// The panic value is an error wrapping the result's error, so a recovered
+// value can be inspected with errors.Is and errors.As.
 func (r Result[T]) Unwrap() T {
 	if r.err != nil {
-		panic(fmt.Sprintf("called Unwrap on an error result: %v", r.err))
+		panic(fmt.Errorf("called Unwrap on an error result: %w", r.err))
 	}
 	return r.value
 }

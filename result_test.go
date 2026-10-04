@@ -38,3 +38,17 @@ func TestResultUnwrapPanicsOnError(t *testing.T) {
 	}()
 	Err[int](errTest).Unwrap()
 }
+
+func TestResultUnwrapPanicWrapsError(t *testing.T) {
+	defer func() {
+		r := recover()
+		err, ok := r.(error)
+		if !ok {
+			t.Fatalf("panic value is %T, want error", r)
+		}
+		if !errors.Is(err, errTest) {
+			t.Fatalf("panic error %v does not wrap the result error", err)
+		}
+	}()
+	Err[int](errTest).Unwrap()
+}

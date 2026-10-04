@@ -256,8 +256,8 @@ func TestCacheGetOrSetLoaderPanic(t *testing.T) {
 	if p := <-panicked; p != "boom" {
 		t.Fatalf("leader recovered %v, want the original panic", p)
 	}
-	if err := <-waiter; !errors.Is(err, errLoaderPanicked) {
-		t.Fatalf("waiter err = %v, want errLoaderPanicked", err)
+	if err := <-waiter; !errors.Is(err, ErrLoaderPanicked) {
+		t.Fatalf("waiter err = %v, want ErrLoaderPanicked", err)
 	}
 	// The key must be usable again afterwards.
 	if v, err := c.GetOrSet("k", func() (int, error) { return 2, nil }); v != 2 || err != nil {

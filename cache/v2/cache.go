@@ -74,7 +74,10 @@ type cacheCall[V any] struct {
 // ttl doesn't make every Set scan the whole map.
 const minSweepInterval = time.Minute
 
-var errLoaderPanicked = errors.New("cache: loader panicked")
+// ErrLoaderPanicked is returned by GetOrSet to callers that waited for a load
+// that panicked. The panic itself propagates in the goroutine that ran the
+// load.
+var ErrLoaderPanicked = errors.New("cache: loader panicked")
 
 // Item is a single item of Cache.
 type Item[V any] struct {
@@ -193,7 +196,8 @@ func addNanos(now int64, d time.Duration) int64 {
 // Concurrent calls for the same missing key share a single load: one
 // caller runs it and the others wait for its result. An error from load is
 // returned to all of them and is not cached. If load panics, the panic
-// propagates in the calling goroutine and waiting callers get an error.
+// propagates in the calling goroutine and waiting callers get
+// ErrLoaderPanicked.
 func (c *Cache[K, V]) GetOrSet(key K, load func() (V, error)) (V, error) {
 	if v, ok := c.Get(key); ok {
 		return v, nil
@@ -212,7 +216,7 @@ func (c *Cache[K, V]) GetOrSet(key K, load func() (V, error)) (V, error) {
 	finished := false
 	defer func() {
 		if !finished {
-			call.err = errLoaderPanicked
+			call.err = ErrLoaderPanicked
 		}
 		c.callsMu.Lock()
 		delete(c.calls, key)

@@ -296,3 +296,35 @@ func TestCacheSetSweepIsRateLimited(t *testing.T) {
 		t.Fatalf("%d items, want 1 after the interval elapsed", n)
 	}
 }
+
+func TestCacheNonPositiveTTLNeverExpires(t *testing.T) {
+	for _, ttl := range []time.Duration{0, -time.Second} {
+		c, clk := newTestCache[string, int](ttl)
+		c.Set("a", 1)
+		c.SetWithTTL("b", 2, ttl)
+
+		clk.Advance(1000 * time.Hour)
+		c.Set("trigger-sweep", 3)
+		c.Cleanup()
+
+		for _, k := range []string{"a", "b"} {
+			if _, ok := c.Get(k); !ok {
+				t.Fatalf("ttl=%v: item %q expired, want it to live forever", ttl, k)
+			}
+		}
+	}
+}
+
+func TestCacheSetWithTTLZeroOverridesDefault(t *testing.T) {
+	c, clk := newTestCache[string, int](time.Minute)
+	c.SetWithTTL("forever", 1, 0)
+	c.Set("default", 2)
+
+	clk.Advance(time.Hour)
+	if _, ok := c.Get("forever"); !ok {
+		t.Fatal("item set with ttl 0 expired")
+	}
+	if _, ok := c.Get("default"); ok {
+		t.Fatal("item with the default ttl should have expired")
+	}
+}

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"go.xchunk.org/anvil/pipes"
+	"go.xchunk.org/anvil/v2/pipes"
 )
 
 func ExampleNewPipe() {

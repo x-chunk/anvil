@@ -4,7 +4,7 @@ Anvil — a small Go library of generic building blocks: a TTL cache, a worker
 pool, channel pipes and a `Result[T]` type.
 
 ```sh
-go get go.xchunk.org/anvil
+go get go.xchunk.org/anvil/v2
 ```
 
 Requires Go 1.24 or newer.

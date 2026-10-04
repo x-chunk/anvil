@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"go.xchunk.org/anvil"
+	anvil "go.xchunk.org/anvil/v2"
 )
 
 func ExampleCache() {

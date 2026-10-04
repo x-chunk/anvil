@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"go.xchunk.org/anvil"
+	anvil "go.xchunk.org/anvil/v2"
 )
 
 func recv[T any](t *testing.T, ch <-chan T) (T, bool) {

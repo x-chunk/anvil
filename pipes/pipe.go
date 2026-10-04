@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"sync"
 
-	"go.xchunk.org/anvil"
+	anvil "go.xchunk.org/anvil/v2"
 )
 
 // TransformPipe reads values of type In from a channel, runs them through a

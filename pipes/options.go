@@ -1,6 +1,6 @@
 package pipes
 
-import "go.xchunk.org/anvil"
+import anvil "go.xchunk.org/anvil/v2"
 
 // TransformPipeOption configures a TransformPipe.
 type TransformPipeOption[In any, Out any] func(*TransformPipe[In, Out])

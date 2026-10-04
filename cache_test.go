@@ -129,3 +129,26 @@ func TestCacheRunCleanup(t *testing.T) {
 		t.Fatal("RunCleanup did not stop after cancel")
 	}
 }
+
+func TestCacheSetWithTTL(t *testing.T) {
+	c, clk := newTestCache[string, int](time.Minute)
+	c.SetWithTTL("short", 1, 10*time.Second)
+	c.SetWithTTL("long", 2, time.Hour)
+	c.Set("default", 3)
+
+	clk.Advance(30 * time.Second)
+	if _, ok := c.Get("short"); ok {
+		t.Fatal("short item should have expired after its own ttl")
+	}
+	if _, ok := c.Get("default"); !ok {
+		t.Fatal("default item expired too early")
+	}
+
+	clk.Advance(time.Minute) // 90s in total
+	if _, ok := c.Get("default"); ok {
+		t.Fatal("default item should be expired")
+	}
+	if _, ok := c.Get("long"); !ok {
+		t.Fatal("long item should outlive the cache default")
+	}
+}

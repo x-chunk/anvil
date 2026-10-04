@@ -48,11 +48,18 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 
 // Set stores value under key and restarts its ttl.
 func (c *Cache[K, V]) Set(key K, value V) {
+	c.SetWithTTL(key, value, c.ttl)
+}
+
+// SetWithTTL stores value under key like Set, but the item lives for ttl
+// instead of the cache's default. A non-positive ttl makes the item expire
+// immediately.
+func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.items[key] = CacheItem[V]{
 		Value:     value,
-		expiresAt: c.now().Add(c.ttl),
+		expiresAt: c.now().Add(ttl),
 	}
 }
 

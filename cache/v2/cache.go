@@ -198,16 +198,41 @@ func addNanos(now int64, d time.Duration) int64 {
 // returned to all of them and is not cached. If load panics, the panic
 // propagates in the calling goroutine and waiting callers get
 // ErrLoaderPanicked.
+//
+// GetOrSet waits for a shared load for as long as it takes; use
+// GetOrSetContext to bound the wait.
 func (c *Cache[K, V]) GetOrSet(key K, load func() (V, error)) (V, error) {
+	return c.GetOrSetContext(context.Background(), key, func(context.Context) (V, error) {
+		return load()
+	})
+}
+
+// GetOrSetContext is like GetOrSet, but the wait can be canceled. If ctx is
+// done before a result is available, it returns ctx.Err(); a load already
+// started by another caller keeps running and its result is still cached.
+//
+// The caller that runs load passes its own ctx to it. Callers waiting on that
+// load get whatever it returns, so if the loading caller's ctx is canceled
+// and load returns that error, the waiters get it too, even if their own
+// contexts are still alive. They are free to retry.
+func (c *Cache[K, V]) GetOrSetContext(ctx context.Context, key K, load func(context.Context) (V, error)) (V, error) {
 	if v, ok := c.Get(key); ok {
 		return v, nil
+	}
+	var zero V
+	if err := ctx.Err(); err != nil {
+		return zero, err
 	}
 
 	c.callsMu.Lock()
 	if call, ok := c.calls[key]; ok {
 		c.callsMu.Unlock()
-		<-call.done
-		return call.value, call.err
+		select {
+		case <-call.done:
+			return call.value, call.err
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		}
 	}
 	call := &cacheCall[V]{done: make(chan struct{})}
 	c.calls[key] = call
@@ -231,7 +256,7 @@ func (c *Cache[K, V]) GetOrSet(key K, load func() (V, error)) (V, error) {
 		return v, nil
 	}
 
-	call.value, call.err = load()
+	call.value, call.err = load(ctx)
 	finished = true
 	if call.err == nil {
 		c.Set(key, call.value)

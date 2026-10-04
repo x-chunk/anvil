@@ -381,3 +381,72 @@ func TestWithClockNilUsesDefault(t *testing.T) {
 		t.Fatal("WithClock(nil) did not fall back to the default clock")
 	}
 }
+
+func TestCacheGetOrSetContextWaiterCanLeave(t *testing.T) {
+	c, _ := newTestCache[string, int](time.Minute)
+
+	started, release := make(chan struct{}), make(chan struct{})
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		c.GetOrSet("k", func() (int, error) {
+			close(started)
+			<-release
+			return 3, nil
+		})
+	}()
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := c.GetOrSetContext(ctx, "k", func(context.Context) (int, error) {
+		t.Error("waiter ran its own load")
+		return 0, nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiter err = %v, want context.DeadlineExceeded", err)
+	}
+
+	// The abandoned load still completes and is cached.
+	close(release)
+	<-leaderDone
+	if v, ok := c.Get("k"); !ok || v != 3 {
+		t.Fatalf("Get after load = %d, %v; want 3, true", v, ok)
+	}
+}
+
+func TestCacheGetOrSetContextPassesContext(t *testing.T) {
+	c, _ := newTestCache[string, int](time.Minute)
+	type ctxKey struct{}
+	ctx := context.WithValue(context.Background(), ctxKey{}, "v")
+
+	_, err := c.GetOrSetContext(ctx, "k", func(got context.Context) (int, error) {
+		if got.Value(ctxKey{}) != "v" {
+			t.Error("load did not get the caller's context")
+		}
+		return 1, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCacheGetOrSetContextDoneBeforeLoad(t *testing.T) {
+	c, _ := newTestCache[string, int](time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := c.GetOrSetContext(ctx, "k", func(context.Context) (int, error) {
+		t.Error("load ran with a done context")
+		return 0, nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+
+	// A cached item is still served with a done context.
+	c.Set("k", 1)
+	if v, err := c.GetOrSetContext(ctx, "k", nil); v != 1 || err != nil {
+		t.Fatalf("GetOrSetContext = %d, %v; want 1, nil", v, err)
+	}
+}

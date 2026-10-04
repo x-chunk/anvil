@@ -75,14 +75,18 @@ func (fsm *FSMComparable[K, V]) Set(id K, val V) {
 }
 
 func (fsm *FSM[K, V]) Init(id K) {
-	if _, ok := fsm.Get(id); !ok {
-		fsm.Set(id, fsm.initState)
+	fsm.mu.Lock()
+	defer fsm.mu.Unlock()
+	if _, ok := fsm.states[id]; !ok {
+		fsm.states[id] = fsm.initState
 	}
 }
 
 func (fsm *FSMComparable[K, V]) Init(id K) {
-	if _, ok := fsm.Get(id); !ok {
-		fsm.Set(id, fsm.initState)
+	fsm.mu.Lock()
+	defer fsm.mu.Unlock()
+	if _, ok := fsm.states[id]; !ok {
+		fsm.states[id] = fsm.initState
 	}
 }
 

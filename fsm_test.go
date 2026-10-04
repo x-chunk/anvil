@@ -85,3 +85,28 @@ func TestFSMComparableConcurrentUse(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Init must not overwrite a state set concurrently: whichever order Init and
+// Set run in, the final state has to be the one passed to Set.
+func TestFSMInitDoesNotClobberConcurrentSet(t *testing.T) {
+	const n = 20000
+	f := NewFSM[int, int](0)
+	fc := NewFSMComparable[int, int](0)
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); f.Init(i); fc.Init(i) }()
+		go func() { defer wg.Done(); f.Set(i, 1); fc.Set(i, 1) }()
+	}
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		if v, _ := f.Get(i); v != 1 {
+			t.Fatalf("FSM id %d: Init overwrote a concurrent Set", i)
+		}
+		if v, _ := fc.Get(i); v != 1 {
+			t.Fatalf("FSMComparable id %d: Init overwrote a concurrent Set", i)
+		}
+	}
+}

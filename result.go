@@ -83,3 +83,29 @@ func (r Result[T]) IsOk() bool {
 func (r Result[T]) Error() error {
 	return r.err
 }
+
+// Map applies f to the value of r. If r holds an error, f is not called and
+// the error is passed through.
+//
+// It is a function rather than a method because Go methods can't declare
+// their own type parameters.
+//
+// Experimental: see Result.
+func Map[T, U any](r Result[T], f func(T) U) Result[U] {
+	if r.err != nil {
+		return Err[U](r.err)
+	}
+	return Ok(f(r.value))
+}
+
+// AndThen calls f with the value of r and returns its Result, which lets
+// fallible steps be chained. If r holds an error, f is not called and the
+// error is passed through.
+//
+// Experimental: see Result.
+func AndThen[T, U any](r Result[T], f func(T) Result[U]) Result[U] {
+	if r.err != nil {
+		return Err[U](r.err)
+	}
+	return f(r.value)
+}

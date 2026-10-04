@@ -2,6 +2,8 @@ package anvil
 
 import (
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -91,4 +93,41 @@ func TestMust(t *testing.T) {
 		}
 	}()
 	Must(1, errTest)
+}
+
+func TestMap(t *testing.T) {
+	double := func(v int) string { return strings.Repeat("x", v) }
+
+	if got := Map(Ok(3), double).Unwrap(); got != "xxx" {
+		t.Fatalf("Map(Ok(3)) = %q", got)
+	}
+
+	called := false
+	r := Map(Err[int](errTest), func(int) string { called = true; return "" })
+	if called {
+		t.Fatal("Map called f on an error result")
+	}
+	if !errors.Is(r.Error(), errTest) {
+		t.Fatalf("Map did not pass the error through: %v", r.Error())
+	}
+}
+
+func TestAndThen(t *testing.T) {
+	parse := func(s string) Result[int] { return Of(strconv.Atoi(s)) }
+
+	if got := AndThen(Ok("12"), parse).Unwrap(); got != 12 {
+		t.Fatalf("AndThen(Ok(\"12\")) = %d", got)
+	}
+	if r := AndThen(Ok("nope"), parse); r.IsOk() {
+		t.Fatal("AndThen should return the error from f")
+	}
+
+	called := false
+	r := AndThen(Err[string](errTest), func(string) Result[int] { called = true; return Ok(0) })
+	if called {
+		t.Fatal("AndThen called f on an error result")
+	}
+	if !errors.Is(r.Error(), errTest) {
+		t.Fatalf("AndThen did not pass the error through: %v", r.Error())
+	}
 }

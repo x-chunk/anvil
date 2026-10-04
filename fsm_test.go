@@ -64,3 +64,24 @@ func TestFSMConcurrentUse(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Run with -race: IsInit used to read the map without holding the lock.
+func TestFSMComparableConcurrentUse(t *testing.T) {
+	f := NewFSMComparable[int, int](0)
+
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				f.Init(i)
+				f.Set(i, i%3)
+				f.IsInit(i)
+				f.Get(i)
+				f.Reset(i)
+			}
+		}()
+	}
+	wg.Wait()
+}

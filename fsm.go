@@ -95,6 +95,8 @@ func (fsm *FSMComparable[K, V]) Reset(id K) {
 }
 
 func (fsm *FSMComparable[K, V]) IsInit(id K) bool {
+	fsm.mu.Lock()
+	defer fsm.mu.Unlock()
 	if state, ok := fsm.states[id]; ok {
 		return state == fsm.initState
 	}

@@ -510,3 +510,40 @@ func TestCacheConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestCacheSetSweepIsIncremental(t *testing.T) {
+	c, clk := newTestCache[int, int](time.Minute, WithShards(1))
+	const n = 10 * sweepBatch
+	for i := range n {
+		c.Set(i, i)
+	}
+	clk.Advance(2 * time.Minute) // everything expired, a sweep is due
+
+	c.Set(-1, 0)
+	if left := c.len(); left < n-sweepBatch+1 {
+		t.Fatalf("%d items left, want at least %d: one Set swept more than a batch", left, n-sweepBatch+1)
+	}
+
+	// Batches keep finding expired items, so following Sets keep sweeping
+	// without waiting for the next interval.
+	for i := 0; i < 100 && c.len() > sweepBatch; i++ {
+		c.Set(-1, 0)
+	}
+	if left := c.len(); left > sweepBatch {
+		t.Fatalf("%d items left, want following Sets to reclaim most of them", left)
+	}
+}
+
+func TestCacheSetSweepStopsWhenFewExpired(t *testing.T) {
+	c, clk := newTestCache[int, int](time.Minute, WithShards(1))
+	for i := range 4 * sweepBatch {
+		c.SetWithTTL(i, i, time.Hour) // alive
+	}
+	c.SetWithTTL(-2, 0, time.Second)
+	clk.Advance(2 * time.Minute)
+
+	c.Set(-1, 0) // sweeps a batch of mostly alive items
+	if s := &c.shards[0]; s.nextSweep <= clk.Nanotime() {
+		t.Fatal("next sweep not rescheduled after a mostly alive batch")
+	}
+}

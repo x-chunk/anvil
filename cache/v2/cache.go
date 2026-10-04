@@ -54,8 +54,17 @@ import (
 // were set. It is safe for concurrent use.
 //
 // Expiry is checked on Get against the cache's Clock. Memory of expired items
-// is reclaimed by Set, which sweeps the shard it writes to at most once per
-// max(ttl, one minute), and on demand by Cleanup or RunCleanup.
+// is reclaimed gradually by Set and fully, on demand, by Cleanup or
+// RunCleanup.
+//
+// Set sweeps the shard it writes to at most once per max(ttl, one minute),
+// examining a bounded batch of items, so a Set never holds a lock for long
+// regardless of the cache's size. While batches keep finding many expired
+// items, following Sets keep sweeping. This reclaims memory in step with
+// writes but is probabilistic: a few expired items may linger until
+// overwritten, invalidated or removed by Cleanup. If memory must be
+// reclaimed promptly and completely, run RunCleanup; note that Cleanup holds
+// each shard's lock while it scans that whole shard.
 //
 // Items are spread over independent shards by a hash of the key, each with
 // its own lock, so goroutines working with different keys rarely contend.
@@ -106,6 +115,16 @@ type cacheCall[V any] struct {
 	value V
 	err   error
 }
+
+// sweepBatch is how many items a single Set examines when it sweeps a
+// shard. It bounds how long a Set holds the shard's lock, however big the
+// shard is.
+const sweepBatch = 256
+
+// sweepAgainRatio: if at least 1/sweepAgainRatio of a full batch was expired,
+// the shard likely holds many more expired items, so the next Set sweeps
+// again instead of waiting for the next interval.
+const sweepAgainRatio = 4
 
 // minSweepInterval bounds how often Set sweeps expired items, so a very short
 // ttl doesn't make every Set scan the whole map.
@@ -242,8 +261,7 @@ func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
 	defer s.mu.Unlock()
 
 	now := c.clock.Nanotime()
-	if now >= s.nextSweep {
-		s.sweep(now)
+	if now >= s.nextSweep && !s.sweepSome(now) {
 		s.nextSweep = addNanos(now, max(c.ttl, minSweepInterval))
 	}
 	item := Item[V]{Value: value}
@@ -362,7 +380,28 @@ func (c *Cache[K, V]) Cleanup() int {
 	return removed
 }
 
-// sweep deletes items expired at clock time now. The caller must hold s.mu.
+// sweepSome examines up to sweepBatch items and deletes those expired at
+// clock time now. It reports whether the shard likely has many more expired
+// items, in which case the caller should sweep again soon. Go randomizes the
+// starting point of map iteration, so repeated calls examine different
+// items. The caller must hold s.mu.
+func (s *shard[K, V]) sweepSome(now int64) (more bool) {
+	scanned, removed := 0, 0
+	for key, item := range s.items {
+		if scanned == sweepBatch {
+			break
+		}
+		scanned++
+		if !item.alive(now) {
+			delete(s.items, key)
+			removed++
+		}
+	}
+	return scanned == sweepBatch && removed*sweepAgainRatio >= scanned
+}
+
+// sweep deletes all items expired at clock time now. The caller must hold
+// s.mu.
 func (s *shard[K, V]) sweep(now int64) int {
 	removed := 0
 	for key, item := range s.items {

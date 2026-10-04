@@ -46,7 +46,6 @@ func TestPipeWorkerPoolForwardsResults(t *testing.T) {
 
 	in, out := make(chan int), make(chan int)
 	p := NewPipe(in, out,
-		WithAsync[int, int](),
 		WithWorkerPool[int, int](wp),
 		WithMiddleware(pure(func(v int) int { return v + 1 })),
 	)
@@ -78,7 +77,7 @@ func TestPipeWorkerPoolForwardsResults(t *testing.T) {
 func TestPipeAsyncForwardsResults(t *testing.T) {
 	in, out := make(chan int), make(chan int)
 	p := NewPipe(in, out,
-		WithAsync[int, int](),
+		WithConcurrency[int, int](4),
 		WithMiddleware(pure(func(v int) int { return v * 10 })),
 	)
 	go p.Start(context.Background())
@@ -122,7 +121,7 @@ func TestStartReturnsOnCancelWithoutConsumer(t *testing.T) {
 			return NewPipe(in, make(chan int), WithMiddleware(pure(func(v int) int { return v }))).Start(ctx)
 		},
 		"pipe-async": func(ctx context.Context, in chan int) error {
-			return NewPipe(in, make(chan int), WithAsync[int, int](), WithMiddleware(pure(func(v int) int { return v }))).Start(ctx)
+			return NewPipe(in, make(chan int), WithConcurrency[int, int](2), WithMiddleware(pure(func(v int) int { return v }))).Start(ctx)
 		},
 		"transform": func(ctx context.Context, in chan int) error {
 			return NewPipe(in, make(chan int), WithMiddleware(pure(func(v int) int { return v }))).Start(ctx)
@@ -153,7 +152,6 @@ func TestPipeReturnsErrorWhenWorkerPoolClosed(t *testing.T) {
 
 	in, out := make(chan int, 1), make(chan int)
 	p := NewPipe(in, out,
-		WithAsync[int, int](),
 		WithWorkerPool[int, int](wp),
 		WithMiddleware(pure(func(v int) int { return v })),
 	)
@@ -177,7 +175,6 @@ func TestPipeCancelWhileWorkerPoolQueueFull(t *testing.T) {
 
 	in, out := make(chan int, 3), make(chan int, 3)
 	p := NewPipe(in, out,
-		WithAsync[int, int](),
 		WithWorkerPool[int, int](wp),
 		WithMiddleware(pure(func(v int) int { <-block; return v })),
 	)
@@ -337,7 +334,7 @@ func TestPipeWithoutMiddlewareReturnsError(t *testing.T) {
 func TestPipeAsync(t *testing.T) {
 	in, out := make(chan int), make(chan string)
 	p := NewPipe(in, out,
-		WithAsync[int, string](),
+		WithConcurrency[int, string](4),
 		WithMiddleware(pure(func(v int) string { return strconv.Itoa(v) })),
 	)
 	go p.Start(context.Background())
@@ -366,7 +363,6 @@ func TestPipeWorkerPool(t *testing.T) {
 
 	in, out := make(chan int), make(chan string)
 	p := NewPipe(in, out,
-		WithAsync[int, string](),
 		WithWorkerPool[int, string](wp),
 		WithMiddleware(pure(func(v int) string { return strconv.Itoa(v * 2) })),
 	)
@@ -394,7 +390,7 @@ func TestWithConcurrencyLimitsInFlightCalls(t *testing.T) {
 	var cur, peak atomic.Int32
 	in, out := make(chan int), make(chan int, total)
 	p := NewPipe(in, out,
-		WithConcurrency[int, int](limit), // no WithAsync needed
+		WithConcurrency[int, int](limit),
 		WithMiddleware(pure(func(v int) int {
 			n := cur.Add(1)
 			for {
@@ -471,7 +467,6 @@ func collect[T any](ch <-chan T) []T {
 func TestMiddlewareErrSkipsFailedValuesAndReportsThem(t *testing.T) {
 	for name, opts := range map[string][]Option[string, int]{
 		"sync":        nil,
-		"async":       {WithAsync[string, int]()},
 		"concurrency": {WithConcurrency[string, int](2)},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -543,7 +538,6 @@ func TestWorkerPoolFailuresGoToErrorHandler(t *testing.T) {
 	errc := make(chan error, 1)
 	in, out := make(chan string), make(chan int)
 	p := NewPipe(in, out,
-		WithAsync[string, int](),
 		WithWorkerPool[string, int](wp),
 		WithMiddleware(parsePositive),
 		WithErrorHandler[string, int](func(err error) { errc <- err }),

@@ -16,8 +16,8 @@
 // then closes the output channel. Write/Read (or Push/Pull) are convenience
 // wrappers around the channels; the former pair honors Pause and Resume.
 //
-// Processing is sequential unless one of WithAsync, WithWorkerPool or
-// WithConcurrency is used; async modes don't preserve order. A middleware
+// Processing is sequential unless WithWorkerPool or WithConcurrency
+// is used; async modes don't preserve order. A middleware
 // that can fail is set with WithMiddlewareErr, and WithErrorHandler receives
 // the errors of the values that were dropped.
 package pipes

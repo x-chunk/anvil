@@ -9,17 +9,10 @@ import "go.xchunk.org/anvil/v2/worker"
 // WithConcurrency[int, string](4).
 type Option[In any, Out any] func(*Pipe[In, Out])
 
-// WithAsync makes a Pipe run its middleware in a separate goroutine per
-// value. Results are sent to out as they complete, so order is not kept.
-// It has no effect without a middleware.
-func WithAsync[In any, Out any]() Option[In, Out] {
-	return func(p *Pipe[In, Out]) {
-		p.isAsync = true
-	}
-}
-
-// WithWorkerPool runs the middleware of an async Pipe on wp instead of on
-// new goroutines. It only takes effect together with WithAsync.
+// WithWorkerPool makes a Pipe run its middleware on wp, so several calls
+// overlap and the pool bounds how many run at once. The pool can be shared
+// between pipes. Results are sent to out as they complete, so order is not
+// kept.
 //
 // WithWorkerPool and WithConcurrency are alternatives: if both are given,
 // the last one wins.
@@ -31,9 +24,8 @@ func WithWorkerPool[In any, Out any](wp *worker.Pool[Out]) Option[In, Out] {
 }
 
 // WithConcurrency makes a Pipe run its middleware concurrently, with at most
-// n calls in flight at a time. It enables async mode by itself, so no
-// WithAsync is needed. Results are sent to out as they complete, so order is
-// not kept. It panics if n is not positive.
+// n calls in flight at a time. Results are sent to out as they complete, so
+// order is not kept. It panics if n is not positive.
 //
 // WithConcurrency and WithWorkerPool are alternatives: if both are given,
 // the last one wins.
@@ -42,7 +34,6 @@ func WithConcurrency[In any, Out any](n int) Option[In, Out] {
 		panic("pipes: concurrency must be positive")
 	}
 	return func(p *Pipe[In, Out]) {
-		p.isAsync = true
 		p.concurrency = n
 		p.workerPool = nil
 	}

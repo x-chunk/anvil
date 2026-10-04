@@ -18,9 +18,8 @@ type Pipe[In any, Out any] struct {
 	middleware Middleware[In, Out]
 	onError    func(error)
 	workerPool *worker.Pool[Out]
-	isAsync    bool
-	// concurrency limits in-flight middleware calls of an async pipe that
-	// has no worker pool; 0 means unlimited.
+	// concurrency limits in-flight middleware calls when there is no worker
+	// pool; 0 means the pipe is sequential unless workerPool is set.
 	concurrency int
 
 	locked Locked
@@ -72,7 +71,7 @@ func NewPipe[In any, Out any](in chan In, out chan Out, opts ...Option[In, Out])
 // It blocks, so run it in its own goroutine.
 //
 // By default values are processed one at a time, in order. In async modes
-// (WithAsync, WithWorkerPool, WithConcurrency) middleware calls overlap and
+// (WithWorkerPool, WithConcurrency) middleware calls overlap and
 // results reach out in completion order, not input order.
 //
 // Start also returns early with the pool's error if a worker pool set with
@@ -80,6 +79,7 @@ func NewPipe[In any, Out any](in chan In, out chan Out, opts ...Option[In, Out])
 // pipe has no middleware and In differs from Out.
 func (p *Pipe[In, Out]) Start(ctx context.Context) error {
 	hasMiddleware := p.middleware != nil
+	async := p.workerPool != nil || p.concurrency > 0
 
 	process := p.middleware
 	if process == nil {
@@ -124,7 +124,7 @@ func (p *Pipe[In, Out]) Start(ctx context.Context) error {
 				return nil
 			}
 
-			if !p.isAsync || !hasMiddleware {
+			if !async || !hasMiddleware {
 				out, err := process(ctx, v)
 				if !handle(err) {
 					continue

@@ -145,3 +145,28 @@ func TestUnwrapOrElse(t *testing.T) {
 		t.Fatalf("Err: got %d, fallback saw %v; want 9, errTest", got, seen)
 	}
 }
+
+func TestOrElse(t *testing.T) {
+	called := false
+	r := Ok(1).OrElse(func(error) Result[int] { called = true; return Ok(9) })
+	if r.Unwrap() != 1 || called {
+		t.Fatalf("Ok: got %+v, fallback called = %v", r, called)
+	}
+
+	if got := Err[int](errTest).OrElse(func(error) Result[int] { return Ok(9) }).Unwrap(); got != 9 {
+		t.Fatalf("recovered value = %d, want 9", got)
+	}
+
+	other := errors.New("other")
+	r = Err[int](errTest).OrElse(func(error) Result[int] { return Err[int](other) })
+	if !errors.Is(r.Error(), other) {
+		t.Fatalf("a failing fallback should replace the error, got %v", r.Error())
+	}
+
+	// The fallback gets the original error.
+	var seen error
+	Err[int](errTest).OrElse(func(err error) Result[int] { seen = err; return Ok(0) })
+	if !errors.Is(seen, errTest) {
+		t.Fatalf("fallback saw %v, want errTest", seen)
+	}
+}

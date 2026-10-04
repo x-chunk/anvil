@@ -116,3 +116,15 @@ func (r Result[T]) AndThen[U any](f func(T) Result[U]) Result[U] {
 	}
 	return f(r.value)
 }
+
+// OrElse returns r if it is successful, and otherwise the Result returned by
+// f, which receives the error. It is the way to fall back to another source
+// that can fail too, without leaving the chain.
+//
+// Experimental: see Result.
+func (r Result[T]) OrElse(f func(err error) Result[T]) Result[T] {
+	if r.err == nil {
+		return r
+	}
+	return f(r.err)
+}

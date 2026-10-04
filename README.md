@@ -17,7 +17,6 @@ Requires Go 1.27 or newer.
 | `WorkerPool[V]` | Fixed number of workers fed from a bounded queue. Context-aware, recovers from panics in tasks. |
 | `pipes` | `Pipe` / `TransformPipe`: connect channels through a (possibly async, possibly fallible) processing step, with `Pause`/`Resume`. |
 | `Result[T]` | A value or an error, with `Of`, `Map`, `AndThen`, `Must`. **Experimental** — the API may change in any release. |
-| `FSM`, `FSMComparable` | **Deprecated.** A mutex-guarded map of states, not a state machine. |
 
 ## Examples
 

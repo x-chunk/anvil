@@ -15,6 +15,7 @@ Requires Go 1.27 or newer. The code of the previous major version lives on the
 | Package | |
 |---|---|
 | [`cache`](cache) | In-memory TTL cache, safe for concurrent use. `GetOrSet` shares one load between concurrent callers, `SetWithTTL` sets a per-item lifetime, expired items are swept automatically. A TTL of 0 means no expiry. |
+| [`cache/v2`](cache/v2) | Same API as `cache`, but expiry is checked against a shared coarse clock (an atomic refreshed every 1ms) instead of `time.Now`, which makes `Get` several times faster. Items may outlive their TTL by up to a tick. `WithClock` sets a custom clock. **Unstable.** Performance comparison with `cache`: see the [package docs](cache/v2/cache.go) and [`cache/get_bench_test.go`](cache/get_bench_test.go). |
 | [`worker`](worker) | `Pool`: a fixed number of workers fed from a bounded queue. Context-aware, recovers from panics in tasks. |
 | [`pipes`](pipes) | `Pipe[In, Out]`: connects channels through a (possibly concurrent, possibly fallible) processing step, with `Pause`/`Resume`. |
 | [`result`](result) | `Result[T]`: a value or an error, with `Of`, `Map`, `AndThen`, `OrElse`, `MapErr`, `UnwrapOrElse`, `All`, `Must`. **Experimental** — the API may change in any release. |

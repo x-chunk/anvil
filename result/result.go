@@ -128,3 +128,19 @@ func (r Result[T]) OrElse(f func(err error) Result[T]) Result[T] {
 	}
 	return f(r.err)
 }
+
+// MapErr applies f to the error of r, typically to add context about the
+// step that failed, and leaves a successful result alone. If f returns nil
+// the original error is kept, so a failure never turns into a success.
+//
+// Experimental: MapErr is newer than the rest of Result and its behavior may
+// still change, see also Result.
+func (r Result[T]) MapErr(f func(err error) error) Result[T] {
+	if r.err == nil {
+		return r
+	}
+	if err := f(r.err); err != nil {
+		return Err[T](err)
+	}
+	return r
+}

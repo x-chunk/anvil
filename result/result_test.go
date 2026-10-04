@@ -2,6 +2,7 @@ package result
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -168,5 +169,32 @@ func TestOrElse(t *testing.T) {
 	Err[int](errTest).OrElse(func(err error) Result[int] { seen = err; return Ok(0) })
 	if !errors.Is(seen, errTest) {
 		t.Fatalf("fallback saw %v, want errTest", seen)
+	}
+}
+
+func TestMapErr(t *testing.T) {
+	called := false
+	r := Ok(1).MapErr(func(err error) error { called = true; return err })
+	if r.Unwrap() != 1 || called {
+		t.Fatalf("Ok: got %+v, f called = %v", r, called)
+	}
+
+	wrapped := Err[int](errTest).MapErr(func(err error) error { return fmt.Errorf("step: %w", err) })
+	if !errors.Is(wrapped.Error(), errTest) || wrapped.Error().Error() != "step: test error" {
+		t.Fatalf("got %v, want the wrapped error", wrapped.Error())
+	}
+
+	// Steps can attach their own context.
+	r2 := Err[int](errTest).
+		MapErr(func(err error) error { return fmt.Errorf("read: %w", err) }).
+		MapErr(func(err error) error { return fmt.Errorf("load config: %w", err) })
+	if got := r2.Error().Error(); got != "load config: read: test error" {
+		t.Fatalf("got %q", got)
+	}
+
+	// A nil from f must not turn a failure into a success.
+	kept := Err[int](errTest).MapErr(func(error) error { return nil })
+	if kept.IsOk() || !errors.Is(kept.Error(), errTest) {
+		t.Fatalf("got %+v, want the original error kept", kept)
 	}
 }

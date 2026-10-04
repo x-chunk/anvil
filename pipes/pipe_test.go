@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	anvil "go.xchunk.org/anvil/v2"
+	"go.xchunk.org/anvil/v2/worker"
 )
 
 func recv[T any](t *testing.T, ch <-chan T) (T, bool) {
@@ -40,7 +40,7 @@ func TestPipeSyncForwardsMiddlewareResult(t *testing.T) {
 }
 
 func TestPipeWorkerPoolForwardsResults(t *testing.T) {
-	wp := anvil.NewWorkerPool[int](2, 1)
+	wp := worker.New[int](2, 1)
 	wp.Start(context.Background())
 	defer wp.Shutdown()
 
@@ -147,7 +147,7 @@ func TestStartReturnsOnCancelWithoutConsumer(t *testing.T) {
 }
 
 func TestPipeReturnsErrorWhenWorkerPoolClosed(t *testing.T) {
-	wp := anvil.NewWorkerPool[int](1, 1)
+	wp := worker.New[int](1, 1)
 	wp.Start(context.Background())
 	wp.Shutdown()
 
@@ -162,13 +162,13 @@ func TestPipeReturnsErrorWhenWorkerPoolClosed(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- p.Start(context.Background()) }()
 
-	if err, _ := recv(t, done); !errors.Is(err, anvil.ErrPoolClosed) {
+	if err, _ := recv(t, done); !errors.Is(err, worker.ErrClosed) {
 		t.Fatalf("Start returned %v, want ErrPoolClosed", err)
 	}
 }
 
 func TestPipeCancelWhileWorkerPoolQueueFull(t *testing.T) {
-	wp := anvil.NewWorkerPool[int](1, 0)
+	wp := worker.New[int](1, 0)
 	wp.Start(context.Background())
 	defer wp.Shutdown()
 
@@ -365,7 +365,7 @@ func TestTransformPipeAsync(t *testing.T) {
 }
 
 func TestTransformPipeWorkerPool(t *testing.T) {
-	wp := anvil.NewWorkerPool[string](2, 1)
+	wp := worker.New[string](2, 1)
 	wp.Start(context.Background())
 	defer wp.Shutdown()
 
@@ -444,7 +444,7 @@ func TestWithConcurrencyRejectsNonPositive(t *testing.T) {
 }
 
 func TestWithConcurrencyAndWorkerPoolLastWins(t *testing.T) {
-	wp := anvil.NewWorkerPool[int](1, 1)
+	wp := worker.New[int](1, 1)
 
 	p := NewPipe[int](nil, nil, WithWorkerPool(wp), WithConcurrency[int](2))
 	if p.workerPool != nil || p.concurrency != 2 {
@@ -541,7 +541,7 @@ func TestMiddlewareErrReceivesStartContext(t *testing.T) {
 }
 
 func TestWorkerPoolFailuresGoToErrorHandler(t *testing.T) {
-	wp := anvil.NewWorkerPool[int](1, 1)
+	wp := worker.New[int](1, 1)
 	wp.Start(context.Background())
 	defer wp.Shutdown()
 

@@ -1,4 +1,4 @@
-package anvil
+package worker
 
 import (
 	"context"
@@ -7,8 +7,8 @@ import (
 	"sync"
 )
 
-// ErrPoolClosed is returned by Submit after the pool has been shut down.
-var ErrPoolClosed = errors.New("anvil: worker pool is closed")
+// ErrClosed is returned by Submit after the pool has been shut down.
+var ErrClosed = errors.New("worker: pool is closed")
 
 // Response is the outcome of a Task: the value returned by Exec, or the
 // error it returned. A panic in Exec and a cancelled pool context are also
@@ -18,10 +18,10 @@ type Response[V any] struct {
 	Err   error
 }
 
-// Task is a unit of work for a WorkerPool.
+// Task is a unit of work for a Pool.
 type Task[V any] struct {
 	// Exec does the work. It receives the context passed to
-	// WorkerPool.Start.
+	// Pool.Start.
 	Exec func(ctx context.Context) (V, error)
 
 	// Result receives exactly one Response when the task completes. It may
@@ -31,10 +31,10 @@ type Task[V any] struct {
 	Result chan Response[V]
 }
 
-// WorkerPool runs tasks on a fixed number of goroutines fed from a bounded
-// queue. Create it with NewWorkerPool, call Start once, submit tasks with
+// Pool runs tasks on a fixed number of goroutines fed from a bounded
+// queue. Create it with New, call Start once, submit tasks with
 // Submit or SubmitCtx and finish with Shutdown.
-type WorkerPool[V any] struct {
+type Pool[V any] struct {
 	tasksChan chan Task[V]
 	wg        sync.WaitGroup
 	size      int
@@ -45,14 +45,14 @@ type WorkerPool[V any] struct {
 	startOnce sync.Once
 }
 
-// NewWorkerPool creates a pool of size workers with room for queueSize
+// New creates a pool of size workers with room for queueSize
 // pending tasks. It panics if size is not positive. Workers are not running
 // until Start is called.
-func NewWorkerPool[V any](size, queueSize int) *WorkerPool[V] {
+func New[V any](size, queueSize int) *Pool[V] {
 	if size <= 0 {
-		panic("anvil: worker pool size must be positive")
+		panic("worker: pool size must be positive")
 	}
-	return &WorkerPool[V]{
+	return &Pool[V]{
 		tasksChan: make(chan Task[V], queueSize),
 		size:      size,
 	}
@@ -60,7 +60,7 @@ func NewWorkerPool[V any](size, queueSize int) *WorkerPool[V] {
 
 // Start launches the workers. Only the first call has an effect; later
 // calls are ignored, so the pool never runs more than size workers.
-func (wp *WorkerPool[V]) Start(ctx context.Context) {
+func (wp *Pool[V]) Start(ctx context.Context) {
 	wp.startOnce.Do(func() {
 		for range wp.size {
 			wp.wg.Add(1)
@@ -70,14 +70,14 @@ func (wp *WorkerPool[V]) Start(ctx context.Context) {
 }
 
 // Submit enqueues a task, blocking while the queue is full. It returns
-// ErrPoolClosed if the pool has been shut down.
-func (wp *WorkerPool[V]) Submit(task Task[V]) error {
+// ErrClosed if the pool has been shut down.
+func (wp *Pool[V]) Submit(task Task[V]) error {
 	return wp.SubmitCtx(context.Background(), task)
 }
 
 // SubmitCtx is like Submit but gives up with ctx.Err() if ctx is done
 // before the task could be enqueued.
-func (wp *WorkerPool[V]) SubmitCtx(ctx context.Context, task Task[V]) error {
+func (wp *Pool[V]) SubmitCtx(ctx context.Context, task Task[V]) error {
 	// The read lock keeps Shutdown from closing the channel under a
 	// concurrent send. Workers keep draining the queue until it is closed,
 	// so a Submit blocked on a full queue can't stall Shutdown forever.
@@ -85,7 +85,7 @@ func (wp *WorkerPool[V]) SubmitCtx(ctx context.Context, task Task[V]) error {
 	defer wp.mu.RUnlock()
 
 	if wp.closed {
-		return ErrPoolClosed
+		return ErrClosed
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -101,7 +101,7 @@ func (wp *WorkerPool[V]) SubmitCtx(ctx context.Context, task Task[V]) error {
 
 // Shutdown stops accepting tasks, lets queued tasks finish and waits for
 // the workers to exit. It is safe to call more than once.
-func (wp *WorkerPool[V]) Shutdown() {
+func (wp *Pool[V]) Shutdown() {
 	wp.mu.Lock()
 	if !wp.closed {
 		wp.closed = true
@@ -112,7 +112,7 @@ func (wp *WorkerPool[V]) Shutdown() {
 	wp.wg.Wait()
 }
 
-func (wp *WorkerPool[V]) worker(ctx context.Context) {
+func (wp *Pool[V]) worker(ctx context.Context) {
 	defer wp.wg.Done()
 	for job := range wp.tasksChan {
 		var res Response[V]
@@ -139,7 +139,7 @@ func safeExec[V any](ctx context.Context, exec func(context.Context) (V, error))
 	defer func() {
 		if r := recover(); r != nil {
 			var zero V
-			v, err = zero, fmt.Errorf("anvil: task panicked: %v", r)
+			v, err = zero, fmt.Errorf("worker: task panicked: %v", r)
 		}
 	}()
 	return exec(ctx)

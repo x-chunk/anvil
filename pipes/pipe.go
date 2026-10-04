@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"sync"
 
-	anvil "go.xchunk.org/anvil/v2"
+	"go.xchunk.org/anvil/v2/worker"
 )
 
 // TransformPipe reads values of type In from a channel, runs them through a
@@ -18,7 +18,7 @@ type TransformPipe[In any, Out any] struct {
 	middleware    Middleware[In, Out]
 	errMiddleware ErrMiddleware[In, Out]
 	onError       func(error)
-	workerPool    *anvil.WorkerPool[Out]
+	workerPool    *worker.Pool[Out]
 	isAsync       bool
 	// concurrency limits in-flight middleware calls of an async pipe that
 	// has no worker pool; 0 means unlimited.
@@ -161,9 +161,9 @@ func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
 
 			if p.workerPool != nil {
 				// Buffered so the worker never blocks on a result nobody waits for.
-				resultCh := make(chan anvil.Response[Out], 1)
+				resultCh := make(chan worker.Response[Out], 1)
 
-				err := p.workerPool.SubmitCtx(ctx, anvil.Task[Out]{
+				err := p.workerPool.SubmitCtx(ctx, worker.Task[Out]{
 					Result: resultCh,
 					Exec: func(ctx context.Context) (Out, error) {
 						return process(ctx, v)

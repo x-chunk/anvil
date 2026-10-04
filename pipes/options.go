@@ -1,6 +1,6 @@
 package pipes
 
-import anvil "go.xchunk.org/anvil/v2"
+import "go.xchunk.org/anvil/v2/worker"
 
 // TransformPipeOption configures a TransformPipe.
 type TransformPipeOption[In any, Out any] func(*TransformPipe[In, Out])
@@ -32,7 +32,7 @@ func WithTransformAsync[In any, Out any]() TransformPipeOption[In, Out] {
 //
 // WithWorkerPool and WithConcurrency are alternatives: if both are given,
 // the last one wins.
-func WithWorkerPool[T any](wp *anvil.WorkerPool[T]) PipeOption[T] {
+func WithWorkerPool[T any](wp *worker.Pool[T]) PipeOption[T] {
 	return forPipe(WithTransformWorkerPool[T, T](wp))
 }
 
@@ -40,7 +40,7 @@ func WithWorkerPool[T any](wp *anvil.WorkerPool[T]) PipeOption[T] {
 //
 // WithWorkerPool and WithConcurrency are alternatives: if both are given,
 // the last one wins.
-func WithTransformWorkerPool[In any, Out any](wp *anvil.WorkerPool[Out]) TransformPipeOption[In, Out] {
+func WithTransformWorkerPool[In any, Out any](wp *worker.Pool[Out]) TransformPipeOption[In, Out] {
 	return func(p *TransformPipe[In, Out]) {
 		p.workerPool = wp
 		p.concurrency = 0

@@ -54,7 +54,8 @@ func coarseNanos() int64 {
 	return coarseNow.Load()
 }
 
-// atomicCache is Cache with expiry stored as int64 coarse-clock nanos.
+// atomicCache is a minimal model of the cache/v2 approach: expiry is stored
+// as int64 coarse-clock nanos.
 type atomicCache[K comparable, V any] struct {
 	mu    sync.RWMutex
 	items map[K]atomicItem[V]

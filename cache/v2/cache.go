@@ -246,10 +246,22 @@ func evictBatch(shardCap int) int {
 //	   256  18.0                52.0    57.1
 //	  1024  18.3                40.5    51.9
 //
+// Sharding is not free: picking a shard means hashing the key, and a single
+// shard skips that. Used by one goroutine, the default is therefore slightly
+// slower than one shard, by about 5ns per operation. Measured with
+// GOMAXPROCS=1, in ns/op:
+//
+//	operation           1 shard   default (64)
+//	Get, hit               30.2           35.3
+//	Get, miss              28.1           33.1
+//	90% Get + 10% Set      33.1           37.8
+//	Set                    50.8           55.4
+//	GetOrSet, hit          35.8           41.1
+//
 // How to choose:
 //
 //   - Used by one goroutine at a time: WithShards(1). Any other count only
-//     adds the cost of hashing the key, about 5-10ns per operation.
+//     adds the cost of hashing the key, about 5ns (10-17%) per operation.
 //   - Many goroutines, mostly reads: the default. Get stops improving past
 //     about 64 shards per core actually used.
 //   - Many goroutines with frequent writes: consider more, up to 1024.

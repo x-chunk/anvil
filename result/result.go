@@ -74,6 +74,16 @@ func (r Result[T]) UnwrapOr(fallback T) T {
 	return r.value
 }
 
+// UnwrapOrElse returns the value, or the result of calling fallback with the
+// error. Unlike UnwrapOr, the fallback is computed only when needed, and it
+// can look at the error.
+func (r Result[T]) UnwrapOrElse(fallback func(err error) T) T {
+	if r.err != nil {
+		return fallback(r.err)
+	}
+	return r.value
+}
+
 // IsOk reports whether the result is successful.
 func (r Result[T]) IsOk() bool {
 	return r.err == nil

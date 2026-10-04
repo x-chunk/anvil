@@ -131,3 +131,17 @@ func TestAndThen(t *testing.T) {
 		t.Fatalf("AndThen did not pass the error through: %v", r.Error())
 	}
 }
+
+func TestUnwrapOrElse(t *testing.T) {
+	called := false
+	got := Ok(1).UnwrapOrElse(func(error) int { called = true; return 9 })
+	if got != 1 || called {
+		t.Fatalf("Ok: got %d, fallback called = %v; want 1, false", got, called)
+	}
+
+	var seen error
+	got = Err[int](errTest).UnwrapOrElse(func(err error) int { seen = err; return 9 })
+	if got != 9 || !errors.Is(seen, errTest) {
+		t.Fatalf("Err: got %d, fallback saw %v; want 9, errTest", got, seen)
+	}
+}

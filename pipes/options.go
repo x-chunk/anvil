@@ -49,32 +49,14 @@ func WithConcurrency[In any, Out any](n int) Option[In, Out] {
 }
 
 // WithMiddleware sets the function that converts every value of a Pipe.
-//
-// WithMiddleware and WithMiddlewareErr are alternatives: if both are given,
-// the last one wins.
 func WithMiddleware[In any, Out any](mw Middleware[In, Out]) Option[In, Out] {
 	return func(p *Pipe[In, Out]) {
 		p.middleware = mw
-		p.errMiddleware = nil
-	}
-}
-
-// WithMiddlewareErr sets a middleware that receives the context passed to
-// Start and may return an error. A value that fails is dropped instead of
-// being sent to out, and the error goes to the handler set with
-// WithErrorHandler (it is ignored if there is none).
-//
-// WithMiddleware and WithMiddlewareErr are alternatives: if both are given,
-// the last one wins.
-func WithMiddlewareErr[In any, Out any](mw ErrMiddleware[In, Out]) Option[In, Out] {
-	return func(p *Pipe[In, Out]) {
-		p.errMiddleware = mw
-		p.middleware = nil
 	}
 }
 
 // WithErrorHandler sets the function called with every error that makes a
-// Pipe drop a value: errors returned by a WithMiddlewareErr middleware, and
+// Pipe drop a value: errors returned by the middleware, and
 // failures reported by a worker pool (such as a panic in the middleware).
 //
 // In async modes the handler may be called from several goroutines at once,

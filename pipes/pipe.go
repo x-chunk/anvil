@@ -15,11 +15,10 @@ type Pipe[In any, Out any] struct {
 	in  chan In
 	out chan Out
 
-	middleware    Middleware[In, Out]
-	errMiddleware ErrMiddleware[In, Out]
-	onError       func(error)
-	workerPool    *worker.Pool[Out]
-	isAsync       bool
+	middleware Middleware[In, Out]
+	onError    func(error)
+	workerPool *worker.Pool[Out]
+	isAsync    bool
 	// concurrency limits in-flight middleware calls of an async pipe that
 	// has no worker pool; 0 means unlimited.
 	concurrency int
@@ -32,15 +31,12 @@ type Pipe[In any, Out any] struct {
 // convert the values.
 var ErrMiddlewareRequired = errors.New("pipes: middleware is required when input and output types differ")
 
-// Middleware converts a value of a pipe. In async modes it may be called
-// from several goroutines at once. Use ErrMiddleware if it needs the
-// context or can fail.
-type Middleware[In any, Out any] func(v In) Out
-
-// ErrMiddleware is a Middleware that receives the context passed to Start
-// and can fail. A value for which it returns an error is dropped, and the
-// error is passed to the handler set with WithErrorHandler, if any.
-type ErrMiddleware[In any, Out any] func(ctx context.Context, v In) (Out, error)
+// Middleware converts a value of a pipe. It receives the context passed to
+// Start. A value for which it returns an error is dropped instead of being
+// sent to out, and the error is passed to the handler set with
+// WithErrorHandler, if any. In async modes it may be called from several
+// goroutines at once.
+type Middleware[In any, Out any] func(ctx context.Context, v In) (Out, error)
 
 // Locked is the pause state shared by Read and Write. Its zero value is
 // ready to use.
@@ -83,23 +79,20 @@ func NewPipe[In any, Out any](in chan In, out chan Out, opts ...Option[In, Out])
 // WithWorkerPool has been shut down, and with ErrMiddlewareRequired if the
 // pipe has no middleware and In differs from Out.
 func (p *Pipe[In, Out]) Start(ctx context.Context) error {
-	hasMiddleware := p.middleware != nil || p.errMiddleware != nil
+	hasMiddleware := p.middleware != nil
 
-	process := p.errMiddleware
-	switch {
-	case process != nil:
-	case p.middleware != nil:
-		process = func(_ context.Context, v In) (Out, error) { return p.middleware(v), nil }
-	case reflect.TypeFor[In]() == reflect.TypeFor[Out]():
+	process := p.middleware
+	if process == nil {
+		if reflect.TypeFor[In]() != reflect.TypeFor[Out]() {
+			close(p.out)
+			return ErrMiddlewareRequired
+		}
 		// Without a middleware values are forwarded as they are, which is
 		// only possible when both channels carry the same type.
 		process = func(_ context.Context, v In) (Out, error) {
 			out, _ := any(v).(Out)
 			return out, nil
 		}
-	default:
-		close(p.out)
-		return ErrMiddlewareRequired
 	}
 
 	// handle reports whether the value should be forwarded.

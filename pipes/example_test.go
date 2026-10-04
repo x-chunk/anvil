@@ -10,7 +10,7 @@ import (
 
 func ExampleNewPipe() {
 	in, out := make(chan int), make(chan int)
-	p := pipes.NewPipe(in, out, pipes.WithMiddleware(func(v int) int { return v * 10 }))
+	p := pipes.NewPipe(in, out, pipes.WithMiddleware(func(_ context.Context, v int) (int, error) { return v * 10, nil }))
 	go p.Start(context.Background())
 
 	go func() {
@@ -30,7 +30,7 @@ func ExampleNewPipe() {
 func ExampleNewPipe_convert() {
 	in, out := make(chan int), make(chan string)
 	p := pipes.NewPipe(in, out,
-		pipes.WithMiddleware(func(v int) string { return "#" + strconv.Itoa(v) }),
+		pipes.WithMiddleware(func(_ context.Context, v int) (string, error) { return "#" + strconv.Itoa(v), nil }),
 	)
 	go p.Start(context.Background())
 
@@ -43,12 +43,12 @@ func ExampleNewPipe_convert() {
 	// Output: #7
 }
 
-func ExampleWithMiddlewareErr() {
+func ExampleWithErrorHandler() {
 	var dropped []error
 
 	in, out := make(chan string), make(chan int)
 	p := pipes.NewPipe(in, out,
-		pipes.WithMiddlewareErr(func(_ context.Context, s string) (int, error) {
+		pipes.WithMiddleware(func(_ context.Context, s string) (int, error) {
 			return strconv.Atoi(s)
 		}),
 		// The pipe is sequential, and out is closed before the loop below

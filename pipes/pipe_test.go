@@ -28,7 +28,7 @@ func recv[T any](t *testing.T, ch <-chan T) (T, bool) {
 
 func TestPipeSyncForwardsMiddlewareResult(t *testing.T) {
 	in, out := make(chan int), make(chan int)
-	p := NewPipe(in, out, WithMiddleware(func(v int) int { return v * 2 }))
+	p := NewPipe(in, out, WithMiddleware(pure(func(v int) int { return v * 2 })))
 
 	go p.Start(context.Background())
 
@@ -48,7 +48,7 @@ func TestPipeWorkerPoolForwardsResults(t *testing.T) {
 	p := NewPipe(in, out,
 		WithAsync[int, int](),
 		WithWorkerPool[int, int](wp),
-		WithMiddleware(func(v int) int { return v + 1 }),
+		WithMiddleware(pure(func(v int) int { return v + 1 })),
 	)
 	go p.Start(context.Background())
 
@@ -79,7 +79,7 @@ func TestPipeAsyncForwardsResults(t *testing.T) {
 	in, out := make(chan int), make(chan int)
 	p := NewPipe(in, out,
 		WithAsync[int, int](),
-		WithMiddleware(func(v int) int { return v * 10 }),
+		WithMiddleware(pure(func(v int) int { return v * 10 })),
 	)
 	go p.Start(context.Background())
 
@@ -98,7 +98,7 @@ func TestPipeAsyncForwardsResults(t *testing.T) {
 
 func TestPipeCancelDoesNotCloseIn(t *testing.T) {
 	in, out := make(chan int, 1), make(chan string)
-	p := NewPipe(in, out, WithMiddleware(func(v int) string { return "x" }))
+	p := NewPipe(in, out, WithMiddleware(pure(func(v int) string { return "x" })))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -119,13 +119,13 @@ func TestStartReturnsOnCancelWithoutConsumer(t *testing.T) {
 			return NewPipe(in, make(chan int)).Start(ctx)
 		},
 		"pipe-sync-middleware": func(ctx context.Context, in chan int) error {
-			return NewPipe(in, make(chan int), WithMiddleware(func(v int) int { return v })).Start(ctx)
+			return NewPipe(in, make(chan int), WithMiddleware(pure(func(v int) int { return v }))).Start(ctx)
 		},
 		"pipe-async": func(ctx context.Context, in chan int) error {
-			return NewPipe(in, make(chan int), WithAsync[int, int](), WithMiddleware(func(v int) int { return v })).Start(ctx)
+			return NewPipe(in, make(chan int), WithAsync[int, int](), WithMiddleware(pure(func(v int) int { return v }))).Start(ctx)
 		},
 		"transform": func(ctx context.Context, in chan int) error {
-			return NewPipe(in, make(chan int), WithMiddleware(func(v int) int { return v })).Start(ctx)
+			return NewPipe(in, make(chan int), WithMiddleware(pure(func(v int) int { return v }))).Start(ctx)
 		},
 	}
 	for name, start := range cases {
@@ -155,7 +155,7 @@ func TestPipeReturnsErrorWhenWorkerPoolClosed(t *testing.T) {
 	p := NewPipe(in, out,
 		WithAsync[int, int](),
 		WithWorkerPool[int, int](wp),
-		WithMiddleware(func(v int) int { return v }),
+		WithMiddleware(pure(func(v int) int { return v })),
 	)
 	in <- 1
 
@@ -179,7 +179,7 @@ func TestPipeCancelWhileWorkerPoolQueueFull(t *testing.T) {
 	p := NewPipe(in, out,
 		WithAsync[int, int](),
 		WithWorkerPool[int, int](wp),
-		WithMiddleware(func(v int) int { <-block; return v }),
+		WithMiddleware(pure(func(v int) int { <-block; return v })),
 	)
 	for i := 0; i < 3; i++ {
 		in <- i
@@ -253,7 +253,7 @@ func TestPauseDoesNotAffectPushAndPull(t *testing.T) {
 
 func TestPipePauseResume(t *testing.T) {
 	in, out := make(chan int, 1), make(chan string, 1)
-	p := NewPipe(in, out, WithMiddleware(func(v int) string { return "x" }))
+	p := NewPipe(in, out, WithMiddleware(pure(func(v int) string { return "x" })))
 
 	p.Pause()
 	wrote := make(chan struct{})
@@ -338,7 +338,7 @@ func TestPipeAsync(t *testing.T) {
 	in, out := make(chan int), make(chan string)
 	p := NewPipe(in, out,
 		WithAsync[int, string](),
-		WithMiddleware(func(v int) string { return strconv.Itoa(v) }),
+		WithMiddleware(pure(func(v int) string { return strconv.Itoa(v) })),
 	)
 	go p.Start(context.Background())
 
@@ -368,7 +368,7 @@ func TestPipeWorkerPool(t *testing.T) {
 	p := NewPipe(in, out,
 		WithAsync[int, string](),
 		WithWorkerPool[int, string](wp),
-		WithMiddleware(func(v int) string { return strconv.Itoa(v * 2) }),
+		WithMiddleware(pure(func(v int) string { return strconv.Itoa(v * 2) })),
 	)
 	go p.Start(context.Background())
 
@@ -395,7 +395,7 @@ func TestWithConcurrencyLimitsInFlightCalls(t *testing.T) {
 	in, out := make(chan int), make(chan int, total)
 	p := NewPipe(in, out,
 		WithConcurrency[int, int](limit), // no WithAsync needed
-		WithMiddleware(func(v int) int {
+		WithMiddleware(pure(func(v int) int {
 			n := cur.Add(1)
 			for {
 				old := peak.Load()
@@ -406,7 +406,7 @@ func TestWithConcurrencyLimitsInFlightCalls(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 			cur.Add(-1)
 			return v
-		}),
+		})),
 	)
 	go p.Start(context.Background())
 
@@ -480,7 +480,7 @@ func TestMiddlewareErrSkipsFailedValuesAndReportsThem(t *testing.T) {
 
 			in, out := make(chan string), make(chan int)
 			opts = append(opts,
-				WithMiddlewareErr(parsePositive),
+				WithMiddleware(parsePositive),
 				WithErrorHandler[string, int](func(err error) {
 					mu.Lock()
 					errs = append(errs, err)
@@ -510,7 +510,7 @@ func TestMiddlewareErrSkipsFailedValuesAndReportsThem(t *testing.T) {
 
 func TestMiddlewareErrWithoutHandlerDropsSilently(t *testing.T) {
 	in, out := make(chan string), make(chan int)
-	go NewPipe(in, out, WithMiddlewareErr(parsePositive)).Start(context.Background())
+	go NewPipe(in, out, WithMiddleware(parsePositive)).Start(context.Background())
 
 	go func() { in <- "bad"; in <- "7"; close(in) }()
 
@@ -524,7 +524,7 @@ func TestMiddlewareErrReceivesStartContext(t *testing.T) {
 	ctx := context.WithValue(context.Background(), key{}, 99)
 
 	in, out := make(chan int), make(chan int)
-	go NewPipe(in, out, WithMiddlewareErr(func(ctx context.Context, v int) (int, error) {
+	go NewPipe(in, out, WithMiddleware(func(ctx context.Context, v int) (int, error) {
 		return ctx.Value(key{}).(int), nil
 	})).Start(ctx)
 
@@ -545,7 +545,7 @@ func TestWorkerPoolFailuresGoToErrorHandler(t *testing.T) {
 	p := NewPipe(in, out,
 		WithAsync[string, int](),
 		WithWorkerPool[string, int](wp),
-		WithMiddlewareErr(parsePositive),
+		WithMiddleware(parsePositive),
 		WithErrorHandler[string, int](func(err error) { errc <- err }),
 	)
 	go p.Start(context.Background())
@@ -560,18 +560,7 @@ func TestWorkerPoolFailuresGoToErrorHandler(t *testing.T) {
 	}
 }
 
-func TestMiddlewareAndMiddlewareErrLastWins(t *testing.T) {
-	plain := func(v int) int { return v }
-	failing := func(context.Context, int) (int, error) { return 0, errTest }
-
-	p := NewPipe[int](nil, nil, WithMiddleware(plain), WithMiddlewareErr(failing))
-	if p.middleware != nil || p.errMiddleware == nil {
-		t.Fatal("WithMiddlewareErr after WithMiddleware should replace it")
-	}
-	p = NewPipe[int](nil, nil, WithMiddlewareErr(failing), WithMiddleware(plain))
-	if p.middleware == nil || p.errMiddleware != nil {
-		t.Fatal("WithMiddleware after WithMiddlewareErr should replace it")
-	}
+// pure adapts a function that can't fail and doesn't need the context.
+func pure[In, Out any](f func(In) Out) Middleware[In, Out] {
+	return func(_ context.Context, v In) (Out, error) { return f(v), nil }
 }
-
-var errTest = errors.New("test error")

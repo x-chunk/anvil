@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -387,5 +388,69 @@ func TestTransformPipeWorkerPool(t *testing.T) {
 	}
 	if n != 6 {
 		t.Fatalf("received %d results, want 6", n)
+	}
+}
+
+func TestWithConcurrencyLimitsInFlightCalls(t *testing.T) {
+	const limit, total = 3, 12
+
+	var cur, peak atomic.Int32
+	in, out := make(chan int), make(chan int, total)
+	p := NewPipe(in, out,
+		WithConcurrency[int](limit), // no WithAsync needed
+		WithMiddleware(func(v int) int {
+			n := cur.Add(1)
+			for {
+				old := peak.Load()
+				if n <= old || peak.CompareAndSwap(old, n) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+			cur.Add(-1)
+			return v
+		}),
+	)
+	go p.Start(context.Background())
+
+	go func() {
+		for i := 0; i < total; i++ {
+			in <- i
+		}
+		close(in)
+	}()
+
+	n := 0
+	for range out {
+		n++
+	}
+	if n != total {
+		t.Fatalf("got %d results, want %d", n, total)
+	}
+	if got := peak.Load(); got != limit {
+		t.Fatalf("peak concurrency = %d, want exactly %d", got, limit)
+	}
+}
+
+func TestWithConcurrencyRejectsNonPositive(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected a panic")
+		}
+	}()
+	WithConcurrency[int](0)
+}
+
+func TestWithConcurrencyAndWorkerPoolLastWins(t *testing.T) {
+	wp := anvil.NewWorkerPool[int](1, 1)
+
+	p := NewPipe[int](nil, nil, WithWorkerPool(wp), WithConcurrency[int](2))
+	if p.workerPool != nil || p.concurrency != 2 {
+		t.Fatalf("WithConcurrency after WithWorkerPool: pool=%v concurrency=%d", p.workerPool, p.concurrency)
+	}
+
+	p = NewPipe[int](nil, nil, WithConcurrency[int](2), WithWorkerPool(wp))
+	if p.workerPool != wp || p.concurrency != 0 {
+		t.Fatalf("WithWorkerPool after WithConcurrency: pool=%v concurrency=%d", p.workerPool, p.concurrency)
 	}
 }

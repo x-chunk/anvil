@@ -24,14 +24,44 @@ func WithTransformAsync[In any, Out any]() TransformPipeOption[In, Out] {
 
 // WithWorkerPool runs the middleware of an async Pipe on wp instead of on
 // new goroutines. It only takes effect together with WithAsync.
+//
+// WithWorkerPool and WithConcurrency are alternatives: if both are given,
+// the last one wins.
 func WithWorkerPool[T any](wp *anvil.WorkerPool[T]) PipeOption[T] {
 	return WithTransformWorkerPool[T, T](wp)
 }
 
 // WithTransformWorkerPool is WithWorkerPool for a TransformPipe.
+//
+// WithWorkerPool and WithConcurrency are alternatives: if both are given,
+// the last one wins.
 func WithTransformWorkerPool[In any, Out any](wp *anvil.WorkerPool[Out]) TransformPipeOption[In, Out] {
 	return func(p *TransformPipe[In, Out]) {
 		p.workerPool = wp
+		p.concurrency = 0
+	}
+}
+
+// WithConcurrency makes a Pipe run its middleware concurrently, with at most
+// n calls in flight at a time. It enables async mode by itself, so no
+// WithAsync is needed. Results are sent to out as they complete, so order is
+// not kept. It panics if n is not positive.
+//
+// WithConcurrency and WithWorkerPool are alternatives: if both are given,
+// the last one wins.
+func WithConcurrency[T any](n int) PipeOption[T] {
+	return WithTransformConcurrency[T, T](n)
+}
+
+// WithTransformConcurrency is WithConcurrency for a TransformPipe.
+func WithTransformConcurrency[In any, Out any](n int) TransformPipeOption[In, Out] {
+	if n <= 0 {
+		panic("pipes: concurrency must be positive")
+	}
+	return func(p *TransformPipe[In, Out]) {
+		p.isAsync = true
+		p.concurrency = n
+		p.workerPool = nil
 	}
 }
 

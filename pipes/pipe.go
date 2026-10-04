@@ -18,6 +18,9 @@ type TransformPipe[In any, Out any] struct {
 	middleware Middleware[In, Out]
 	workerPool *anvil.WorkerPool[Out]
 	isAsync    bool
+	// concurrency limits in-flight middleware calls of an async pipe that
+	// has no worker pool; 0 means unlimited.
+	concurrency int
 
 	locked Locked
 }
@@ -83,6 +86,11 @@ func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
 		}
 	}
 
+	var sem chan struct{}
+	if p.concurrency > 0 {
+		sem = make(chan struct{}, p.concurrency)
+	}
+
 	var inflight sync.WaitGroup
 	defer func() {
 		inflight.Wait()
@@ -130,9 +138,20 @@ func (p *TransformPipe[In, Out]) Start(ctx context.Context) error {
 				continue
 			}
 
+			if sem != nil {
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+
 			inflight.Add(1)
 			go func() {
 				defer inflight.Done()
+				if sem != nil {
+					defer func() { <-sem }()
+				}
 				send(ctx, p.out, middleware(v))
 			}()
 		case <-ctx.Done():

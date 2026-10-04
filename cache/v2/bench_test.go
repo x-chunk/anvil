@@ -94,10 +94,21 @@ func BenchmarkCache(b *testing.B) {
 	}
 }
 
-// BenchmarkCacheMaxEntries measures Set into a full bounded cache, where
-// every Set of a new key evicts one.
+// BenchmarkCacheMaxEntries measures Set into a bounded cache: one that is
+// full, where every Set of a new key evicts, and one with room to spare.
 func BenchmarkCacheMaxEntries(b *testing.B) {
 	keys := benchKeys()
+	b.Run("SetNotFull", func(b *testing.B) {
+		c := New[string, int](time.Hour, WithMaxEntries(4*benchKeyCount))
+		b.ResetTimer()
+		b.RunParallel(func(pb *testing.PB) {
+			i := int(time.Now().UnixNano())
+			for pb.Next() {
+				c.Set(keys[i&(benchKeyCount-1)], i)
+				i++
+			}
+		})
+	})
 	b.Run("SetEvicting", func(b *testing.B) {
 		c := New[string, int](time.Hour, WithMaxEntries(benchKeyCount/4))
 		b.ResetTimer()

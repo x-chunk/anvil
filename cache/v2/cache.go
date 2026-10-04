@@ -307,7 +307,9 @@ func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
 	if ttl > 0 {
 		item.expiresAt = addNanos(now, ttl)
 	}
-	if c.shardCap > 0 {
+	// Check the length first: looking the key up costs a map access, and
+	// it only matters once the shard is full.
+	if c.shardCap > 0 && len(s.items) >= c.shardCap {
 		if _, exists := s.items[key]; !exists {
 			for len(s.items) >= c.shardCap {
 				s.evict(now)

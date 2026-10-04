@@ -601,12 +601,20 @@ func TestCacheMaxEntriesPrefersExpiredThenSoonest(t *testing.T) {
 }
 
 func TestCacheMaxEntriesShrinksShards(t *testing.T) {
-	c := New[int, int](time.Minute, WithMaxEntries(5), WithShards(64))
-	if got := len(c.shards); got != 4 {
-		t.Fatalf("%d shards, want 4 (largest power of two not above 5)", got)
-	}
-	if c.shardCap != 1 {
-		t.Fatalf("shardCap = %d, want 1", c.shardCap)
+	for _, tc := range []struct{ max, shards, want int }{
+		{5, 64, 1},
+		{127, 64, 1},
+		{128, 64, 2},
+		{4096, 1024, 64},
+		{1 << 20, 64, 64},
+	} {
+		c := New[int, int](time.Minute, WithMaxEntries(tc.max), WithShards(tc.shards))
+		if got := len(c.shards); got != tc.want {
+			t.Errorf("max %d, shards %d: got %d shards, want %d", tc.max, tc.shards, got, tc.want)
+		}
+		if c.shardCap*len(c.shards) > tc.max {
+			t.Errorf("max %d: shards can hold %d items in total", tc.max, c.shardCap*len(c.shards))
+		}
 	}
 }
 

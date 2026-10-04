@@ -167,8 +167,11 @@ type options struct {
 // The limit is enforced per shard: each shard holds at most n divided by the
 // number of shards, so the cache as a whole never exceeds n, but with an
 // uneven spread of keys a shard may start evicting before the cache is full.
-// If n is smaller than the shard count, the cache uses fewer shards so that
-// every shard can hold at least one item.
+// To keep shards from getting too small, a bounded cache uses fewer shards
+// than WithShards or the default would give, if needed, so that each shard
+// holds at least 64 items; a cache bounded to fewer than 128 items has a
+// single shard. Small bounded caches therefore trade some parallelism for
+// precise and cheap eviction.
 //
 // When a new key is stored in a full shard, the cache evicts a small batch
 // of items at once: up to 8, but at most 1/16 of the shard's capacity, so
@@ -205,6 +208,12 @@ const (
 	// maxEvictSample bounds the sample and sizes the candidate buffer.
 	maxEvictSample = maxEvictBatch * evictSamplePerItem
 )
+
+// minBoundedShardCap is the fewest items a shard of a bounded cache is made
+// to hold. Smaller shards evict one item at a time instead of in batches, and
+// with only a few items per shard an uneven spread of keys makes shards
+// evict long before the cache as a whole is full.
+const minBoundedShardCap = 64
 
 // evictBatch returns how many items to evict at once from a full shard with
 // the given capacity.
@@ -260,9 +269,9 @@ func New[K comparable, V any](ttl time.Duration, opts ...Option) *Cache[K, V] {
 	}
 	n := nextPowerOfTwo(o.shards)
 	if o.maxEntries > 0 {
-		// Keep at least one item per shard: shrink to the largest power
-		// of two not above maxEntries.
-		for n > o.maxEntries {
+		// Keep shards big enough to evict in batches and to even out an
+		// uneven spread of keys.
+		for n > 1 && o.maxEntries/n < minBoundedShardCap {
 			n /= 2
 		}
 	}

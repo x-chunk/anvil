@@ -9,7 +9,7 @@ import (
 
 func ExampleOf() {
 	r := result.Of(strconv.Atoi("12"))
-	doubled := result.Map(r, func(n int) int { return n * 2 })
+	doubled := r.Map(func(n int) int { return n * 2 })
 
 	v, err := doubled.Value()
 	fmt.Println(v, err)

@@ -98,12 +98,12 @@ func TestMust(t *testing.T) {
 func TestMap(t *testing.T) {
 	double := func(v int) string { return strings.Repeat("x", v) }
 
-	if got := Map(Ok(3), double).Unwrap(); got != "xxx" {
+	if got := Ok(3).Map(double).Unwrap(); got != "xxx" {
 		t.Fatalf("Map(Ok(3)) = %q", got)
 	}
 
 	called := false
-	r := Map(Err[int](errTest), func(int) string { called = true; return "" })
+	r := Err[int](errTest).Map(func(int) string { called = true; return "" })
 	if called {
 		t.Fatal("Map called f on an error result")
 	}
@@ -115,15 +115,15 @@ func TestMap(t *testing.T) {
 func TestAndThen(t *testing.T) {
 	parse := func(s string) Result[int] { return Of(strconv.Atoi(s)) }
 
-	if got := AndThen(Ok("12"), parse).Unwrap(); got != 12 {
+	if got := Ok("12").AndThen(parse).Unwrap(); got != 12 {
 		t.Fatalf("AndThen(Ok(\"12\")) = %d", got)
 	}
-	if r := AndThen(Ok("nope"), parse); r.IsOk() {
+	if r := Ok("nope").AndThen(parse); r.IsOk() {
 		t.Fatal("AndThen should return the error from f")
 	}
 
 	called := false
-	r := AndThen(Err[string](errTest), func(string) Result[int] { called = true; return Ok(0) })
+	r := Err[string](errTest).AndThen(func(string) Result[int] { called = true; return Ok(0) })
 	if called {
 		t.Fatal("AndThen called f on an error result")
 	}

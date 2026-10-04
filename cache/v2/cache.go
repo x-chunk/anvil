@@ -170,9 +170,14 @@ type options struct {
 // If n is smaller than the shard count, the cache uses fewer shards so that
 // every shard can hold at least one item.
 //
-// When a new key is stored in a full shard, the cache samples a few of its
-// items and evicts an expired one if the sample has any, otherwise the one
-// that would expire soonest, treating items without a ttl as expiring last.
+// When a new key is stored in a full shard, the cache evicts a small batch
+// of items at once: up to 8, but at most 1/16 of the shard's capacity, so
+// shards that hold fewer than 32 items evict one at a time. It samples four
+// random items per item to evict, removes every expired one in the sample,
+// and fills the rest of the batch with the live sampled items that would
+// expire soonest, treating items without a ttl as expiring last. Batching
+// makes eviction cheaper, at the cost of a full shard briefly holding a few
+// items fewer than its limit.
 // This is an approximation, not LRU: reads don't affect what gets evicted,
 // which keeps Get free of writes. With a single ttl for all items it behaves
 // close to evicting the oldest item. Overwriting an existing key never
@@ -183,8 +188,29 @@ func WithMaxEntries(n int) Option {
 	}
 }
 
-// evictionSample is how many items are compared to pick one to evict.
-const evictionSample = 5
+// Eviction removes items in batches: starting a map iteration costs about
+// as much as visiting three or four items, so paying it once per batch
+// instead of once per evicted item makes eviction much cheaper.
+const (
+	// maxEvictBatch is the most items one eviction removes.
+	maxEvictBatch = 8
+	// evictBatchDivisor keeps a batch at most 1/evictBatchDivisor of the
+	// shard capacity, so small shards evict one item at a time and a
+	// shard never drops far below its limit.
+	evictBatchDivisor = 16
+	// evictSamplePerItem is how many items are sampled per item evicted.
+	// Picking the soonest-expiring quarter of a random sample keeps eviction
+	// close to "soonest expiry first" without scanning the shard.
+	evictSamplePerItem = 4
+	// maxEvictSample bounds the sample and sizes the candidate buffer.
+	maxEvictSample = maxEvictBatch * evictSamplePerItem
+)
+
+// evictBatch returns how many items to evict at once from a full shard with
+// the given capacity.
+func evictBatch(shardCap int) int {
+	return max(1, min(maxEvictBatch, shardCap/evictBatchDivisor))
+}
 
 // WithShards sets the number of shards the cache is split into, rounded up to
 // a power of two. More shards mean less lock contention between goroutines,
@@ -312,7 +338,7 @@ func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
 	if c.shardCap > 0 && len(s.items) >= c.shardCap {
 		if _, exists := s.items[key]; !exists {
 			for len(s.items) >= c.shardCap {
-				s.evict(now)
+				s.evict(now, evictBatch(c.shardCap))
 			}
 		}
 	}
@@ -448,39 +474,53 @@ func (s *shard[K, V]) sweepSome(now int64) (more bool) {
 	return scanned == sweepBatch && removed*sweepAgainRatio >= scanned
 }
 
-// evict removes at least one item to make room for a new one. It samples up
-// to evictionSample items, removing every expired one it sees; if none was
-// expired, it removes the sampled item that would expire soonest. Go
-// randomizes the starting point of map iteration, so the sample differs
-// between calls. The caller must hold s.mu and s.items must not be empty.
-func (s *shard[K, V]) evict(now int64) {
+// evict removes up to batch items, and at least one, to make room for new
+// ones. It samples up to batch*evictSamplePerItem items, removing every
+// expired one it sees; if that frees fewer than batch slots, it also removes
+// the live sampled items that would expire soonest, treating items without a
+// ttl as expiring last. Go randomizes the starting point of map iteration,
+// so the sample differs between calls. The caller must hold s.mu, s.items
+// must not be empty, and batch must be in [1, maxEvictBatch].
+func (s *shard[K, V]) evict(now int64, batch int) {
+	type candidate struct {
+		key K
+		exp int64
+	}
 	var (
-		victim     K
-		victimExp  int64 = math.MaxInt64
-		haveVictim bool
-		removed    bool
-		sampled    int
+		buf     [maxEvictSample]candidate // on the stack: no allocation
+		live    = buf[:0]
+		removed int
+		sampled int
 	)
 	for key, item := range s.items {
-		if sampled == evictionSample {
+		if sampled == batch*evictSamplePerItem {
 			break
 		}
 		sampled++
 		if !item.alive(now) {
 			delete(s.items, key)
-			removed = true
+			removed++
 			continue
 		}
 		exp := item.expiresAt
 		if exp == 0 {
 			exp = math.MaxInt64 // never expires: evict last
 		}
-		if !haveVictim || exp < victimExp {
-			victim, victimExp, haveVictim = key, exp, true
-		}
+		live = append(live, candidate{key, exp})
 	}
-	if !removed && haveVictim {
-		delete(s.items, victim)
+
+	// Remove the soonest-expiring live candidates by partial selection
+	// sort: the sample is at most maxEvictSample items, so this is cheap.
+	for i := 0; removed < batch && i < len(live); i++ {
+		minIdx := i
+		for j := i + 1; j < len(live); j++ {
+			if live[j].exp < live[minIdx].exp {
+				minIdx = j
+			}
+		}
+		live[i], live[minIdx] = live[minIdx], live[i]
+		delete(s.items, live[i].key)
+		removed++
 	}
 }
 

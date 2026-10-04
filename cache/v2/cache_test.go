@@ -609,3 +609,64 @@ func TestCacheMaxEntriesShrinksShards(t *testing.T) {
 		t.Fatalf("shardCap = %d, want 1", c.shardCap)
 	}
 }
+
+func TestEvictBatch(t *testing.T) {
+	for _, tc := range []struct{ cap, want int }{{1, 1}, {31, 1}, {32, 2}, {64, 4}, {128, 8}, {1 << 20, 8}} {
+		if got := evictBatch(tc.cap); got != tc.want {
+			t.Errorf("evictBatch(%d) = %d, want %d", tc.cap, got, tc.want)
+		}
+	}
+}
+
+func TestCacheMaxEntriesEvictsInBatches(t *testing.T) {
+	const limit = 1024
+	c, _ := newTestCache[int, int](time.Minute, WithMaxEntries(limit), WithShards(1))
+	for i := range limit {
+		c.Set(i, i)
+	}
+	c.Set(-1, 0) // full: evicts one batch, then stores
+	if want := limit - maxEvictBatch + 1; c.len() != want {
+		t.Fatalf("%d items after an evicting Set, want %d", c.len(), want)
+	}
+	// The next Sets fill the freed slots without evicting.
+	for i := range maxEvictBatch - 1 {
+		c.Set(-2-i, 0)
+	}
+	if c.len() != limit {
+		t.Fatalf("%d items, want %d", c.len(), limit)
+	}
+}
+
+func TestShardEvictPrefersSoonest(t *testing.T) {
+	// A batch of 2 samples 8 items, so with exactly 8 items the sample is
+	// the whole shard and the result is deterministic.
+	c, _ := newTestCache[int, int](time.Minute, WithShards(1))
+	s := &c.shards[0]
+	for i := range 8 {
+		s.items[i] = Item[int]{Value: i, expiresAt: int64(100 + i)}
+	}
+	s.items[8] = Item[int]{Value: 8} // never expires: must survive
+	delete(s.items, 7)               // keep the shard at 8 items
+	s.evict(0, 2)
+	for i := range 9 {
+		if i == 7 {
+			continue
+		}
+		_, ok := s.items[i]
+		if want := i >= 2; ok != want {
+			t.Fatalf("item %d present = %v, want %v: the two soonest should go", i, ok, want)
+		}
+	}
+}
+
+func TestShardEvictRemovesAllExpiredInSample(t *testing.T) {
+	c, _ := newTestCache[int, int](time.Minute, WithShards(1))
+	s := &c.shards[0]
+	for i := range 4 {
+		s.items[i] = Item[int]{Value: i, expiresAt: 10} // expired at now=50
+	}
+	s.evict(50, 1) // samples 4: all expired, all removed
+	if len(s.items) != 0 {
+		t.Fatalf("%d items left, want every expired sampled item removed", len(s.items))
+	}
+}

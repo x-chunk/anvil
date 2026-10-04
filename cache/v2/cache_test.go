@@ -456,8 +456,8 @@ func TestCacheShardCount(t *testing.T) {
 			t.Errorf("WithShards(%d): %d shards, want %d", tc.in, got, tc.want)
 		}
 	}
-	if n := defaultShards(); n < 4 || n > maxDefaultShards || n&(n-1) != 0 {
-		t.Fatalf("defaultShards() = %d, want a power of two in [4, %d]", n, maxDefaultShards)
+	if n := defaultShards(); n < shardsPerProc || n > maxDefaultShards || n&(n-1) != 0 {
+		t.Fatalf("defaultShards() = %d, want a power of two in [%d, %d]", n, shardsPerProc, maxDefaultShards)
 	}
 }
 

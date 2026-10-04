@@ -93,13 +93,19 @@ type shard[K comparable, V any] struct {
 	_ [64]byte
 }
 
-// maxDefaultShards caps the default shard count on machines with many CPUs.
-const maxDefaultShards = 256
+// shardsPerProc is how many default shards there are per GOMAXPROCS. Lock
+// contention falls roughly in proportion to 1/shards: with 4 goroutines Get
+// keeps getting faster up to about 64 shards per P and writes beyond that.
+const shardsPerProc = 64
 
-// defaultShards returns the smallest power of two that is at least four
-// times GOMAXPROCS, capped at maxDefaultShards.
+// maxDefaultShards caps the default shard count on machines with many CPUs,
+// bounding the memory of an empty cache (about 155 bytes per shard).
+const maxDefaultShards = 1024
+
+// defaultShards returns the smallest power of two that is at least
+// shardsPerProc times GOMAXPROCS, capped at maxDefaultShards.
 func defaultShards() int {
-	return min(nextPowerOfTwo(4*runtime.GOMAXPROCS(0)), maxDefaultShards)
+	return min(nextPowerOfTwo(shardsPerProc*runtime.GOMAXPROCS(0)), maxDefaultShards)
 }
 
 // nextPowerOfTwo returns the smallest power of two that is at least n, or 1
@@ -222,12 +228,41 @@ func evictBatch(shardCap int) int {
 }
 
 // WithShards sets the number of shards the cache is split into, rounded up to
-// a power of two. More shards mean less lock contention between goroutines,
-// at the cost of a little memory per shard and of hashing every key; one
-// shard skips hashing entirely, which suits caches used by a single
-// goroutine. The default is four times GOMAXPROCS at the time New is called,
-// rounded up to a power of two and capped at 256. A non-positive n is
-// ignored.
+// a power of two. A non-positive n is ignored.
+//
+// Each shard has its own lock. Even a read lock writes to shared memory, so
+// goroutines that touch the same shard at the same time slow each other
+// down, and the chance of that falls roughly in proportion to 1/shards. The
+// default is 64 times GOMAXPROCS at the time New is called, rounded up to a
+// power of two and capped at 1024: 64 shards with GOMAXPROCS=1, 256 with 4,
+// 1024 with 16 or more. WithMaxEntries may lower the count further.
+//
+// Measured with 4 goroutines on 4 cores, in ns/op:
+//
+//	shards   Get   90% Get + 10% Set   Set
+//	     4  53.8                86.2   183.8
+//	    16  27.4                78.7   102.9
+//	    64  19.7                63.2    72.5
+//	   256  18.0                52.0    57.1
+//	  1024  18.3                40.5    51.9
+//
+// How to choose:
+//
+//   - Used by one goroutine at a time: WithShards(1). Any other count only
+//     adds the cost of hashing the key, about 5-10ns per operation.
+//   - Many goroutines, mostly reads: the default. Get stops improving past
+//     about 64 shards per core actually used.
+//   - Many goroutines with frequent writes: consider more, up to 1024.
+//     Writes hold the lock exclusively and keep benefiting from more shards.
+//   - Many small caches (say, one per client): fewer, such as 4-16. An empty
+//     shard costs about 155 bytes, so an empty cache with 1024 shards takes
+//     about 155KB and a thousand of them 155MB; for a cache of 1000 items,
+//     256 shards nearly double its memory compared to 16.
+//
+// Too few shards make goroutines queue on the same locks, which shows up as
+// Get and Set latency growing with the number of goroutines. Too many waste
+// memory on small caches and spread a bounded cache thin (see
+// WithMaxEntries); they don't slow down operations.
 func WithShards(n int) Option {
 	return func(o *options) {
 		if n > 0 {

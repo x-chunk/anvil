@@ -16,10 +16,10 @@ type fakeClock struct{ t atomic.Int64 }
 func (c *fakeClock) Nanotime() int64         { return c.t.Load() }
 func (c *fakeClock) Advance(d time.Duration) { c.t.Add(int64(d)) }
 
-func newTestCache[K comparable, V any](ttl time.Duration) (*Cache[K, V], *fakeClock) {
+func newTestCache[K comparable, V any](ttl time.Duration, opts ...Option) (*Cache[K, V], *fakeClock) {
 	clk := &fakeClock{}
 	clk.t.Store(1_000_000 * int64(time.Second))
-	return New[K, V](ttl, WithClock(clk)), clk
+	return New[K, V](ttl, append([]Option{WithClock(clk)}, opts...)...), clk
 }
 
 func TestCacheGetSet(t *testing.T) {
@@ -74,7 +74,7 @@ func TestCacheInvalidateFreesEntry(t *testing.T) {
 
 	c.Invalidate("a")
 
-	if n := len(c.items); n != 0 {
+	if n := c.len(); n != 0 {
 		t.Fatalf("%d entries left in the map after Invalidate, want 0", n)
 	}
 }
@@ -89,8 +89,8 @@ func TestCacheCleanup(t *testing.T) {
 	if n := c.Cleanup(); n != 1 {
 		t.Fatalf("Cleanup removed %d items, want 1", n)
 	}
-	if len(c.items) != 1 {
-		t.Fatalf("%d items left, want 1", len(c.items))
+	if c.len() != 1 {
+		t.Fatalf("%d items left, want 1", c.len())
 	}
 	if _, ok := c.Get("fresh"); !ok {
 		t.Fatal("fresh item was removed")
@@ -113,9 +113,7 @@ func TestCacheRunCleanup(t *testing.T) {
 
 	deadline := time.After(2 * time.Second)
 	for {
-		c.mu.RLock()
-		n := len(c.items)
-		c.mu.RUnlock()
+		n := c.len()
 		if n == 0 {
 			break
 		}
@@ -266,7 +264,7 @@ func TestCacheGetOrSetLoaderPanic(t *testing.T) {
 }
 
 func TestCacheSetSweepsExpiredItems(t *testing.T) {
-	c, clk := newTestCache[int, int](10 * time.Minute)
+	c, clk := newTestCache[int, int](10*time.Minute, WithShards(1))
 	for i := 0; i < 100; i++ {
 		c.Set(i, i)
 	}
@@ -275,25 +273,25 @@ func TestCacheSetSweepsExpiredItems(t *testing.T) {
 	clk.Advance(11 * time.Minute)
 	c.Set(1000, 1)
 
-	if n := len(c.items); n != 1 {
+	if n := c.len(); n != 1 {
 		t.Fatalf("%d items in the map after a sweeping Set, want 1", n)
 	}
 }
 
 func TestCacheSetSweepIsRateLimited(t *testing.T) {
-	c, clk := newTestCache[int, int](time.Second) // sweep interval floors at a minute
-	c.Set(0, 0)                                   // first Set sweeps and schedules the next sweep
+	c, clk := newTestCache[int, int](time.Second, WithShards(1)) // sweep interval floors at a minute
+	c.Set(0, 0)                                                  // first Set sweeps and schedules the next sweep
 	c.Set(1, 1)
 
 	clk.Advance(5 * time.Second) // both expired, but a sweep isn't due yet
 	c.Set(2, 2)
-	if n := len(c.items); n != 3 {
+	if n := c.len(); n != 3 {
 		t.Fatalf("%d items, want 3: Set swept earlier than the minimum interval", n)
 	}
 
 	clk.Advance(time.Minute)
 	c.Set(3, 3)
-	if n := len(c.items); n != 1 {
+	if n := c.len(); n != 1 {
 		t.Fatalf("%d items, want 1 after the interval elapsed", n)
 	}
 }
@@ -449,4 +447,66 @@ func TestCacheGetOrSetContextDoneBeforeLoad(t *testing.T) {
 	if v, err := c.GetOrSetContext(ctx, "k", nil); v != 1 || err != nil {
 		t.Fatalf("GetOrSetContext = %d, %v; want 1, nil", v, err)
 	}
+}
+
+func TestCacheShardCount(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{{1, 1}, {3, 4}, {16, 16}, {17, 32}, {0, defaultShards()}, {-5, defaultShards()}} {
+		c := New[int, int](time.Minute, WithShards(tc.in))
+		if got := len(c.shards); got != tc.want {
+			t.Errorf("WithShards(%d): %d shards, want %d", tc.in, got, tc.want)
+		}
+	}
+	if n := defaultShards(); n < 4 || n > maxDefaultShards || n&(n-1) != 0 {
+		t.Fatalf("defaultShards() = %d, want a power of two in [4, %d]", n, maxDefaultShards)
+	}
+}
+
+func TestCacheManyShards(t *testing.T) {
+	c, clk := newTestCache[int, int](time.Minute, WithShards(64))
+	for i := range 1000 {
+		c.Set(i, i)
+	}
+	for i := range 1000 {
+		if v, ok := c.Get(i); !ok || v != i {
+			t.Fatalf("Get(%d) = %d, %v; want %d, true", i, v, ok, i)
+		}
+	}
+	used := 0
+	for i := range c.shards {
+		if len(c.shards[i].items) > 0 {
+			used++
+		}
+	}
+	if used < len(c.shards)/2 {
+		t.Fatalf("keys landed in only %d of %d shards", used, len(c.shards))
+	}
+
+	clk.Advance(2 * time.Minute)
+	if n := c.Cleanup(); n != 1000 {
+		t.Fatalf("Cleanup removed %d items, want 1000", n)
+	}
+	if n := c.len(); n != 0 {
+		t.Fatalf("%d items left after Cleanup, want 0", n)
+	}
+}
+
+func TestCacheConcurrentAccess(t *testing.T) {
+	c := New[int, int](time.Minute)
+	var wg sync.WaitGroup
+	for g := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 1000 {
+				k := (g*1000 + i) % 300
+				c.Set(k, i)
+				c.Get(k)
+				if i%50 == 0 {
+					c.Invalidate(k)
+					c.Cleanup()
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

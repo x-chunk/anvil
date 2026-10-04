@@ -32,7 +32,9 @@
 //	miss, 4 goroutines    110.1     109.0          109.2         110.4
 //
 // With 4 goroutines all variants are bound by the RWMutex reader count, and
-// differences of about 5ns are noise. Reproduce with:
+// differences of about 5ns are noise. Sharding (see WithShards) was added to
+// address that contention; the numbers above were measured before it, with a
+// single lock. Reproduce with:
 //
 //	go test ./cache -run '^$' -bench GetCompare -benchmem -count 5 -cpu 4
 package cache
@@ -40,7 +42,10 @@ package cache
 import (
 	"context"
 	"errors"
+	"hash/maphash"
 	"math"
+	"math/bits"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -49,18 +54,50 @@ import (
 // were set. It is safe for concurrent use.
 //
 // Expiry is checked on Get against the cache's Clock. Memory of expired items
-// is reclaimed by Set, which sweeps them at most once per max(ttl, one
-// minute), and on demand by Cleanup or RunCleanup.
+// is reclaimed by Set, which sweeps the shard it writes to at most once per
+// max(ttl, one minute), and on demand by Cleanup or RunCleanup.
+//
+// Items are spread over independent shards by a hash of the key, each with
+// its own lock, so goroutines working with different keys rarely contend.
+// See WithShards.
 type Cache[K comparable, V any] struct {
-	mu    sync.RWMutex
-	items map[K]Item[V]
-	ttl   time.Duration
-	clock Clock
-
-	nextSweep int64 // clock time when Set should next sweep expired items
+	shards []shard[K, V]
+	mask   uint64 // len(shards)-1; len(shards) is a power of two
+	seed   maphash.Seed
+	ttl    time.Duration
+	clock  Clock
 
 	callsMu sync.Mutex
 	calls   map[K]*cacheCall[V] // in-flight GetOrSet loads
+}
+
+// shard is an independently locked part of a Cache.
+type shard[K comparable, V any] struct {
+	mu        sync.RWMutex
+	items     map[K]Item[V]
+	nextSweep int64 // clock time when Set should next sweep this shard
+
+	// Padding keeps neighboring shards' locks off a shared CPU cache line,
+	// so taking one lock doesn't slow down readers of another.
+	_ [64]byte
+}
+
+// maxDefaultShards caps the default shard count on machines with many CPUs.
+const maxDefaultShards = 256
+
+// defaultShards returns the smallest power of two that is at least four
+// times GOMAXPROCS, capped at maxDefaultShards.
+func defaultShards() int {
+	return min(nextPowerOfTwo(4*runtime.GOMAXPROCS(0)), maxDefaultShards)
+}
+
+// nextPowerOfTwo returns the smallest power of two that is at least n, or 1
+// if n is not positive.
+func nextPowerOfTwo(n int) int {
+	if n <= 1 {
+		return 1
+	}
+	return 1 << bits.Len(uint(n-1))
 }
 
 // cacheCall is a GetOrSet load that other callers for the same key wait on.
@@ -97,7 +134,23 @@ func (i Item[V]) alive(now int64) bool {
 type Option func(*options)
 
 type options struct {
-	clock Clock
+	clock  Clock
+	shards int
+}
+
+// WithShards sets the number of shards the cache is split into, rounded up to
+// a power of two. More shards mean less lock contention between goroutines,
+// at the cost of a little memory per shard and of hashing every key; one
+// shard skips hashing entirely, which suits caches used by a single
+// goroutine. The default is four times GOMAXPROCS at the time New is called,
+// rounded up to a power of two and capped at 256. A non-positive n is
+// ignored.
+func WithShards(n int) Option {
+	return func(o *options) {
+		if n > 0 {
+			o.shards = n
+		}
+	}
 }
 
 // WithClock makes the cache check expiry against clock instead of the shared
@@ -128,12 +181,30 @@ func New[K comparable, V any](ttl time.Duration, opts ...Option) *Cache[K, V] {
 	if o.clock == nil {
 		o.clock = defaultClock()
 	}
-	return &Cache[K, V]{
-		items: make(map[K]Item[V]),
-		ttl:   ttl,
-		clock: o.clock,
-		calls: make(map[K]*cacheCall[V]),
+	if o.shards == 0 {
+		o.shards = defaultShards()
 	}
+	n := nextPowerOfTwo(o.shards)
+	c := &Cache[K, V]{
+		shards: make([]shard[K, V], n),
+		mask:   uint64(n - 1),
+		seed:   maphash.MakeSeed(),
+		ttl:    ttl,
+		clock:  o.clock,
+		calls:  make(map[K]*cacheCall[V]),
+	}
+	for i := range c.shards {
+		c.shards[i].items = make(map[K]Item[V])
+	}
+	return c
+}
+
+// shardFor returns the shard that holds key.
+func (c *Cache[K, V]) shardFor(key K) *shard[K, V] {
+	if c.mask == 0 {
+		return &c.shards[0]
+	}
+	return &c.shards[maphash.Comparable(c.seed, key)&c.mask]
 }
 
 // Get returns the item stored under key. It reports false if the key is
@@ -142,10 +213,11 @@ func New[K comparable, V any](ttl time.Duration, opts ...Option) *Cache[K, V] {
 // Because the clock is coarse, an item may still be returned for up to one
 // clock tick after its ttl has passed.
 func (c *Cache[K, V]) Get(key K) (V, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	s := c.shardFor(key)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	// The clock is read only for items that can expire.
-	if item, ok := c.items[key]; ok && (item.expiresAt == 0 || c.clock.Nanotime() < item.expiresAt) {
+	if item, ok := s.items[key]; ok && (item.expiresAt == 0 || c.clock.Nanotime() < item.expiresAt) {
 		return item.Value, true
 	}
 	var zero V
@@ -165,19 +237,20 @@ func (c *Cache[K, V]) Set(key K, value V) {
 // ttls shorter than the clock's tick are honored only approximately: the item
 // lives for somewhere between ttl and ttl plus one tick.
 func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	s := c.shardFor(key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	now := c.clock.Nanotime()
-	if now >= c.nextSweep {
-		c.sweep(now)
-		c.nextSweep = addNanos(now, max(c.ttl, minSweepInterval))
+	if now >= s.nextSweep {
+		s.sweep(now)
+		s.nextSweep = addNanos(now, max(c.ttl, minSweepInterval))
 	}
 	item := Item[V]{Value: value}
 	if ttl > 0 {
 		item.expiresAt = addNanos(now, ttl)
 	}
-	c.items[key] = item
+	s.items[key] = item
 }
 
 // addNanos returns now+d, saturating at math.MaxInt64 instead of overflowing.
@@ -266,9 +339,10 @@ func (c *Cache[K, V]) GetOrSetContext(ctx context.Context, key K, load func(cont
 
 // Invalidate removes the item stored under key, if any.
 func (c *Cache[K, V]) Invalidate(key K) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.items, key)
+	s := c.shardFor(key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.items, key)
 }
 
 // Cleanup removes all expired items and returns how many were removed.
@@ -278,22 +352,38 @@ func (c *Cache[K, V]) Invalidate(key K) {
 // Cleanup. Set already sweeps periodically, so calling Cleanup is only
 // needed to reclaim memory sooner or when the cache is no longer written to.
 func (c *Cache[K, V]) Cleanup() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.sweep(c.clock.Nanotime())
+	removed := 0
+	for i := range c.shards {
+		s := &c.shards[i]
+		s.mu.Lock()
+		removed += s.sweep(c.clock.Nanotime())
+		s.mu.Unlock()
+	}
+	return removed
 }
 
-// sweep deletes items expired at clock time now. The caller must hold c.mu.
-func (c *Cache[K, V]) sweep(now int64) int {
+// sweep deletes items expired at clock time now. The caller must hold s.mu.
+func (s *shard[K, V]) sweep(now int64) int {
 	removed := 0
-	for key, item := range c.items {
+	for key, item := range s.items {
 		if !item.alive(now) {
-			delete(c.items, key)
+			delete(s.items, key)
 			removed++
 		}
 	}
 	return removed
+}
+
+// len returns the number of items in the cache, expired or not.
+func (c *Cache[K, V]) len() int {
+	n := 0
+	for i := range c.shards {
+		s := &c.shards[i]
+		s.mu.RLock()
+		n += len(s.items)
+		s.mu.RUnlock()
+	}
+	return n
 }
 
 // RunCleanup calls Cleanup every interval until ctx is done. It blocks, so

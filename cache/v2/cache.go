@@ -76,6 +76,8 @@ type Cache[K comparable, V any] struct {
 	ttl    time.Duration
 	clock  Clock
 
+	shardCap int // max items per shard; 0 means unlimited
+
 	callsMu sync.Mutex
 	calls   map[K]*cacheCall[V] // in-flight GetOrSet loads
 }
@@ -153,9 +155,36 @@ func (i Item[V]) alive(now int64) bool {
 type Option func(*options)
 
 type options struct {
-	clock  Clock
-	shards int
+	clock      Clock
+	shards     int
+	maxEntries int
 }
+
+// WithMaxEntries bounds the number of items the cache holds to n. Without
+// it the cache grows without limit, which is risky when keys come from
+// untrusted input. A non-positive n means no limit.
+//
+// The limit is enforced per shard: each shard holds at most n divided by the
+// number of shards, so the cache as a whole never exceeds n, but with an
+// uneven spread of keys a shard may start evicting before the cache is full.
+// If n is smaller than the shard count, the cache uses fewer shards so that
+// every shard can hold at least one item.
+//
+// When a new key is stored in a full shard, the cache samples a few of its
+// items and evicts an expired one if the sample has any, otherwise the one
+// that would expire soonest, treating items without a ttl as expiring last.
+// This is an approximation, not LRU: reads don't affect what gets evicted,
+// which keeps Get free of writes. With a single ttl for all items it behaves
+// close to evicting the oldest item. Overwriting an existing key never
+// evicts.
+func WithMaxEntries(n int) Option {
+	return func(o *options) {
+		o.maxEntries = max(n, 0)
+	}
+}
+
+// evictionSample is how many items are compared to pick one to evict.
+const evictionSample = 5
 
 // WithShards sets the number of shards the cache is split into, rounded up to
 // a power of two. More shards mean less lock contention between goroutines,
@@ -204,6 +233,13 @@ func New[K comparable, V any](ttl time.Duration, opts ...Option) *Cache[K, V] {
 		o.shards = defaultShards()
 	}
 	n := nextPowerOfTwo(o.shards)
+	if o.maxEntries > 0 {
+		// Keep at least one item per shard: shrink to the largest power
+		// of two not above maxEntries.
+		for n > o.maxEntries {
+			n /= 2
+		}
+	}
 	c := &Cache[K, V]{
 		shards: make([]shard[K, V], n),
 		mask:   uint64(n - 1),
@@ -211,6 +247,9 @@ func New[K comparable, V any](ttl time.Duration, opts ...Option) *Cache[K, V] {
 		ttl:    ttl,
 		clock:  o.clock,
 		calls:  make(map[K]*cacheCall[V]),
+	}
+	if o.maxEntries > 0 {
+		c.shardCap = o.maxEntries / n
 	}
 	for i := range c.shards {
 		c.shards[i].items = make(map[K]Item[V])
@@ -267,6 +306,13 @@ func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
 	item := Item[V]{Value: value}
 	if ttl > 0 {
 		item.expiresAt = addNanos(now, ttl)
+	}
+	if c.shardCap > 0 {
+		if _, exists := s.items[key]; !exists {
+			for len(s.items) >= c.shardCap {
+				s.evict(now)
+			}
+		}
 	}
 	s.items[key] = item
 }
@@ -398,6 +444,42 @@ func (s *shard[K, V]) sweepSome(now int64) (more bool) {
 		}
 	}
 	return scanned == sweepBatch && removed*sweepAgainRatio >= scanned
+}
+
+// evict removes at least one item to make room for a new one. It samples up
+// to evictionSample items, removing every expired one it sees; if none was
+// expired, it removes the sampled item that would expire soonest. Go
+// randomizes the starting point of map iteration, so the sample differs
+// between calls. The caller must hold s.mu and s.items must not be empty.
+func (s *shard[K, V]) evict(now int64) {
+	var (
+		victim     K
+		victimExp  int64 = math.MaxInt64
+		haveVictim bool
+		removed    bool
+		sampled    int
+	)
+	for key, item := range s.items {
+		if sampled == evictionSample {
+			break
+		}
+		sampled++
+		if !item.alive(now) {
+			delete(s.items, key)
+			removed = true
+			continue
+		}
+		exp := item.expiresAt
+		if exp == 0 {
+			exp = math.MaxInt64 // never expires: evict last
+		}
+		if !haveVictim || exp < victimExp {
+			victim, victimExp, haveVictim = key, exp, true
+		}
+	}
+	if !removed && haveVictim {
+		delete(s.items, victim)
+	}
 }
 
 // sweep deletes all items expired at clock time now. The caller must hold

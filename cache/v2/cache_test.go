@@ -547,3 +547,65 @@ func TestCacheSetSweepStopsWhenFewExpired(t *testing.T) {
 		t.Fatal("next sweep not rescheduled after a mostly alive batch")
 	}
 }
+
+func TestCacheMaxEntries(t *testing.T) {
+	c, _ := newTestCache[int, int](time.Minute, WithMaxEntries(100), WithShards(4))
+	for i := range 1000 {
+		c.Set(i, i)
+		if n := c.len(); n > 100 {
+			t.Fatalf("after %d Sets the cache holds %d items, want at most 100", i+1, n)
+		}
+	}
+	// The most recent key is always present: storing never evicts itself.
+	if _, ok := c.Get(999); !ok {
+		t.Fatal("the item just stored was evicted")
+	}
+}
+
+func TestCacheMaxEntriesOverwriteDoesNotEvict(t *testing.T) {
+	c, _ := newTestCache[int, int](time.Minute, WithMaxEntries(3), WithShards(1))
+	c.Set(1, 1)
+	c.Set(2, 2)
+	c.Set(3, 3)
+	c.Set(2, 20)
+
+	for k, want := range map[int]int{1: 1, 2: 20, 3: 3} {
+		if v, ok := c.Get(k); !ok || v != want {
+			t.Fatalf("Get(%d) = %d, %v; want %d, true", k, v, ok, want)
+		}
+	}
+}
+
+func TestCacheMaxEntriesPrefersExpiredThenSoonest(t *testing.T) {
+	c, clk := newTestCache[string, int](time.Minute, WithMaxEntries(3), WithShards(1))
+	c.SetWithTTL("forever", 1, 0)
+	c.SetWithTTL("soon", 2, 10*time.Second)
+	c.SetWithTTL("later", 3, time.Hour)
+
+	c.Set("new1", 4) // the sample covers the whole shard: "soon" goes
+	if _, ok := c.Get("soon"); ok {
+		t.Fatal("the item expiring soonest was not evicted")
+	}
+
+	clk.Advance(2 * time.Minute) // "new1" expired
+	c.Set("new2", 5)
+	if _, ok := c.Get("forever"); !ok {
+		t.Fatal("an item without ttl was evicted while an expired one was present")
+	}
+	if _, ok := c.Get("later"); !ok {
+		t.Fatal("a live item was evicted while an expired one was present")
+	}
+	if n := c.len(); n != 3 {
+		t.Fatalf("%d items, want 3", n)
+	}
+}
+
+func TestCacheMaxEntriesShrinksShards(t *testing.T) {
+	c := New[int, int](time.Minute, WithMaxEntries(5), WithShards(64))
+	if got := len(c.shards); got != 4 {
+		t.Fatalf("%d shards, want 4 (largest power of two not above 5)", got)
+	}
+	if c.shardCap != 1 {
+		t.Fatalf("shardCap = %d, want 1", c.shardCap)
+	}
+}

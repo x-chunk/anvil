@@ -16,10 +16,10 @@ type fakeClock struct{ t atomic.Int64 }
 func (c *fakeClock) Nanotime() int64         { return c.t.Load() }
 func (c *fakeClock) Advance(d time.Duration) { c.t.Add(int64(d)) }
 
-func newTestCache[K comparable, V any](ttl time.Duration) (*Cache[K, V], *fakeClock) {
+func newTestCache[K comparable, V any](ttl time.Duration, opts ...Option) (*Cache[K, V], *fakeClock) {
 	clk := &fakeClock{}
 	clk.t.Store(1_000_000 * int64(time.Second))
-	return New[K, V](ttl, WithClock(clk)), clk
+	return New[K, V](ttl, append([]Option{WithClock(clk)}, opts...)...), clk
 }
 
 func TestCacheGetSet(t *testing.T) {
@@ -74,7 +74,7 @@ func TestCacheInvalidateFreesEntry(t *testing.T) {
 
 	c.Invalidate("a")
 
-	if n := len(c.items); n != 0 {
+	if n := c.len(); n != 0 {
 		t.Fatalf("%d entries left in the map after Invalidate, want 0", n)
 	}
 }
@@ -89,8 +89,8 @@ func TestCacheCleanup(t *testing.T) {
 	if n := c.Cleanup(); n != 1 {
 		t.Fatalf("Cleanup removed %d items, want 1", n)
 	}
-	if len(c.items) != 1 {
-		t.Fatalf("%d items left, want 1", len(c.items))
+	if c.len() != 1 {
+		t.Fatalf("%d items left, want 1", c.len())
 	}
 	if _, ok := c.Get("fresh"); !ok {
 		t.Fatal("fresh item was removed")
@@ -113,9 +113,7 @@ func TestCacheRunCleanup(t *testing.T) {
 
 	deadline := time.After(2 * time.Second)
 	for {
-		c.mu.RLock()
-		n := len(c.items)
-		c.mu.RUnlock()
+		n := c.len()
 		if n == 0 {
 			break
 		}
@@ -256,8 +254,8 @@ func TestCacheGetOrSetLoaderPanic(t *testing.T) {
 	if p := <-panicked; p != "boom" {
 		t.Fatalf("leader recovered %v, want the original panic", p)
 	}
-	if err := <-waiter; !errors.Is(err, errLoaderPanicked) {
-		t.Fatalf("waiter err = %v, want errLoaderPanicked", err)
+	if err := <-waiter; !errors.Is(err, ErrLoaderPanicked) {
+		t.Fatalf("waiter err = %v, want ErrLoaderPanicked", err)
 	}
 	// The key must be usable again afterwards.
 	if v, err := c.GetOrSet("k", func() (int, error) { return 2, nil }); v != 2 || err != nil {
@@ -266,7 +264,7 @@ func TestCacheGetOrSetLoaderPanic(t *testing.T) {
 }
 
 func TestCacheSetSweepsExpiredItems(t *testing.T) {
-	c, clk := newTestCache[int, int](10 * time.Minute)
+	c, clk := newTestCache[int, int](10*time.Minute, WithShards(1))
 	for i := 0; i < 100; i++ {
 		c.Set(i, i)
 	}
@@ -275,25 +273,25 @@ func TestCacheSetSweepsExpiredItems(t *testing.T) {
 	clk.Advance(11 * time.Minute)
 	c.Set(1000, 1)
 
-	if n := len(c.items); n != 1 {
+	if n := c.len(); n != 1 {
 		t.Fatalf("%d items in the map after a sweeping Set, want 1", n)
 	}
 }
 
 func TestCacheSetSweepIsRateLimited(t *testing.T) {
-	c, clk := newTestCache[int, int](time.Second) // sweep interval floors at a minute
-	c.Set(0, 0)                                   // first Set sweeps and schedules the next sweep
+	c, clk := newTestCache[int, int](time.Second, WithShards(1)) // sweep interval floors at a minute
+	c.Set(0, 0)                                                  // first Set sweeps and schedules the next sweep
 	c.Set(1, 1)
 
 	clk.Advance(5 * time.Second) // both expired, but a sweep isn't due yet
 	c.Set(2, 2)
-	if n := len(c.items); n != 3 {
+	if n := c.len(); n != 3 {
 		t.Fatalf("%d items, want 3: Set swept earlier than the minimum interval", n)
 	}
 
 	clk.Advance(time.Minute)
 	c.Set(3, 3)
-	if n := len(c.items); n != 1 {
+	if n := c.len(); n != 1 {
 		t.Fatalf("%d items, want 1 after the interval elapsed", n)
 	}
 }
@@ -379,5 +377,304 @@ func TestWithClockNilUsesDefault(t *testing.T) {
 	c := New[string, int](time.Minute, WithClock(nil))
 	if c.clock != Clock(defaultClock()) {
 		t.Fatal("WithClock(nil) did not fall back to the default clock")
+	}
+}
+
+func TestCacheGetOrSetContextWaiterCanLeave(t *testing.T) {
+	c, _ := newTestCache[string, int](time.Minute)
+
+	started, release := make(chan struct{}), make(chan struct{})
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		c.GetOrSet("k", func() (int, error) {
+			close(started)
+			<-release
+			return 3, nil
+		})
+	}()
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := c.GetOrSetContext(ctx, "k", func(context.Context) (int, error) {
+		t.Error("waiter ran its own load")
+		return 0, nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiter err = %v, want context.DeadlineExceeded", err)
+	}
+
+	// The abandoned load still completes and is cached.
+	close(release)
+	<-leaderDone
+	if v, ok := c.Get("k"); !ok || v != 3 {
+		t.Fatalf("Get after load = %d, %v; want 3, true", v, ok)
+	}
+}
+
+func TestCacheGetOrSetContextPassesContext(t *testing.T) {
+	c, _ := newTestCache[string, int](time.Minute)
+	type ctxKey struct{}
+	ctx := context.WithValue(context.Background(), ctxKey{}, "v")
+
+	_, err := c.GetOrSetContext(ctx, "k", func(got context.Context) (int, error) {
+		if got.Value(ctxKey{}) != "v" {
+			t.Error("load did not get the caller's context")
+		}
+		return 1, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCacheGetOrSetContextDoneBeforeLoad(t *testing.T) {
+	c, _ := newTestCache[string, int](time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := c.GetOrSetContext(ctx, "k", func(context.Context) (int, error) {
+		t.Error("load ran with a done context")
+		return 0, nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+
+	// A cached item is still served with a done context.
+	c.Set("k", 1)
+	if v, err := c.GetOrSetContext(ctx, "k", nil); v != 1 || err != nil {
+		t.Fatalf("GetOrSetContext = %d, %v; want 1, nil", v, err)
+	}
+}
+
+func TestCacheShardCount(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{{1, 1}, {3, 4}, {16, 16}, {17, 32}, {0, defaultShards()}, {-5, defaultShards()}} {
+		c := New[int, int](time.Minute, WithShards(tc.in))
+		if got := len(c.shards); got != tc.want {
+			t.Errorf("WithShards(%d): %d shards, want %d", tc.in, got, tc.want)
+		}
+	}
+	if n := defaultShards(); n < shardsPerProc || n > maxDefaultShards || n&(n-1) != 0 {
+		t.Fatalf("defaultShards() = %d, want a power of two in [%d, %d]", n, shardsPerProc, maxDefaultShards)
+	}
+}
+
+func TestCacheManyShards(t *testing.T) {
+	c, clk := newTestCache[int, int](time.Minute, WithShards(64))
+	for i := range 1000 {
+		c.Set(i, i)
+	}
+	for i := range 1000 {
+		if v, ok := c.Get(i); !ok || v != i {
+			t.Fatalf("Get(%d) = %d, %v; want %d, true", i, v, ok, i)
+		}
+	}
+	used := 0
+	for i := range c.shards {
+		if len(c.shards[i].items) > 0 {
+			used++
+		}
+	}
+	if used < len(c.shards)/2 {
+		t.Fatalf("keys landed in only %d of %d shards", used, len(c.shards))
+	}
+
+	clk.Advance(2 * time.Minute)
+	if n := c.Cleanup(); n != 1000 {
+		t.Fatalf("Cleanup removed %d items, want 1000", n)
+	}
+	if n := c.len(); n != 0 {
+		t.Fatalf("%d items left after Cleanup, want 0", n)
+	}
+}
+
+func TestCacheConcurrentAccess(t *testing.T) {
+	c := New[int, int](time.Minute)
+	var wg sync.WaitGroup
+	for g := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 1000 {
+				k := (g*1000 + i) % 300
+				c.Set(k, i)
+				c.Get(k)
+				if i%50 == 0 {
+					c.Invalidate(k)
+					c.Cleanup()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestCacheSetSweepIsIncremental(t *testing.T) {
+	c, clk := newTestCache[int, int](time.Minute, WithShards(1))
+	const n = 10 * sweepBatch
+	for i := range n {
+		c.Set(i, i)
+	}
+	clk.Advance(2 * time.Minute) // everything expired, a sweep is due
+
+	c.Set(-1, 0)
+	if left := c.len(); left < n-sweepBatch+1 {
+		t.Fatalf("%d items left, want at least %d: one Set swept more than a batch", left, n-sweepBatch+1)
+	}
+
+	// Batches keep finding expired items, so following Sets keep sweeping
+	// without waiting for the next interval.
+	for i := 0; i < 100 && c.len() > sweepBatch; i++ {
+		c.Set(-1, 0)
+	}
+	if left := c.len(); left > sweepBatch {
+		t.Fatalf("%d items left, want following Sets to reclaim most of them", left)
+	}
+}
+
+func TestCacheSetSweepStopsWhenFewExpired(t *testing.T) {
+	c, clk := newTestCache[int, int](time.Minute, WithShards(1))
+	for i := range 4 * sweepBatch {
+		c.SetWithTTL(i, i, time.Hour) // alive
+	}
+	c.SetWithTTL(-2, 0, time.Second)
+	clk.Advance(2 * time.Minute)
+
+	c.Set(-1, 0) // sweeps a batch of mostly alive items
+	if s := &c.shards[0]; s.nextSweep <= clk.Nanotime() {
+		t.Fatal("next sweep not rescheduled after a mostly alive batch")
+	}
+}
+
+func TestCacheMaxEntries(t *testing.T) {
+	c, _ := newTestCache[int, int](time.Minute, WithMaxEntries(100), WithShards(4))
+	for i := range 1000 {
+		c.Set(i, i)
+		if n := c.len(); n > 100 {
+			t.Fatalf("after %d Sets the cache holds %d items, want at most 100", i+1, n)
+		}
+	}
+	// The most recent key is always present: storing never evicts itself.
+	if _, ok := c.Get(999); !ok {
+		t.Fatal("the item just stored was evicted")
+	}
+}
+
+func TestCacheMaxEntriesOverwriteDoesNotEvict(t *testing.T) {
+	c, _ := newTestCache[int, int](time.Minute, WithMaxEntries(3), WithShards(1))
+	c.Set(1, 1)
+	c.Set(2, 2)
+	c.Set(3, 3)
+	c.Set(2, 20)
+
+	for k, want := range map[int]int{1: 1, 2: 20, 3: 3} {
+		if v, ok := c.Get(k); !ok || v != want {
+			t.Fatalf("Get(%d) = %d, %v; want %d, true", k, v, ok, want)
+		}
+	}
+}
+
+func TestCacheMaxEntriesPrefersExpiredThenSoonest(t *testing.T) {
+	c, clk := newTestCache[string, int](time.Minute, WithMaxEntries(3), WithShards(1))
+	c.SetWithTTL("forever", 1, 0)
+	c.SetWithTTL("soon", 2, 10*time.Second)
+	c.SetWithTTL("later", 3, time.Hour)
+
+	c.Set("new1", 4) // the sample covers the whole shard: "soon" goes
+	if _, ok := c.Get("soon"); ok {
+		t.Fatal("the item expiring soonest was not evicted")
+	}
+
+	clk.Advance(2 * time.Minute) // "new1" expired
+	c.Set("new2", 5)
+	if _, ok := c.Get("forever"); !ok {
+		t.Fatal("an item without ttl was evicted while an expired one was present")
+	}
+	if _, ok := c.Get("later"); !ok {
+		t.Fatal("a live item was evicted while an expired one was present")
+	}
+	if n := c.len(); n != 3 {
+		t.Fatalf("%d items, want 3", n)
+	}
+}
+
+func TestCacheMaxEntriesShrinksShards(t *testing.T) {
+	for _, tc := range []struct{ max, shards, want int }{
+		{5, 64, 1},
+		{127, 64, 1},
+		{128, 64, 2},
+		{4096, 1024, 64},
+		{1 << 20, 64, 64},
+	} {
+		c := New[int, int](time.Minute, WithMaxEntries(tc.max), WithShards(tc.shards))
+		if got := len(c.shards); got != tc.want {
+			t.Errorf("max %d, shards %d: got %d shards, want %d", tc.max, tc.shards, got, tc.want)
+		}
+		if c.shardCap*len(c.shards) > tc.max {
+			t.Errorf("max %d: shards can hold %d items in total", tc.max, c.shardCap*len(c.shards))
+		}
+	}
+}
+
+func TestEvictBatch(t *testing.T) {
+	for _, tc := range []struct{ cap, want int }{{1, 1}, {31, 1}, {32, 2}, {64, 4}, {128, 8}, {1 << 20, 8}} {
+		if got := evictBatch(tc.cap); got != tc.want {
+			t.Errorf("evictBatch(%d) = %d, want %d", tc.cap, got, tc.want)
+		}
+	}
+}
+
+func TestCacheMaxEntriesEvictsInBatches(t *testing.T) {
+	const limit = 1024
+	c, _ := newTestCache[int, int](time.Minute, WithMaxEntries(limit), WithShards(1))
+	for i := range limit {
+		c.Set(i, i)
+	}
+	c.Set(-1, 0) // full: evicts one batch, then stores
+	if want := limit - maxEvictBatch + 1; c.len() != want {
+		t.Fatalf("%d items after an evicting Set, want %d", c.len(), want)
+	}
+	// The next Sets fill the freed slots without evicting.
+	for i := range maxEvictBatch - 1 {
+		c.Set(-2-i, 0)
+	}
+	if c.len() != limit {
+		t.Fatalf("%d items, want %d", c.len(), limit)
+	}
+}
+
+func TestShardEvictPrefersSoonest(t *testing.T) {
+	// A batch of 2 samples 8 items, so with exactly 8 items the sample is
+	// the whole shard and the result is deterministic.
+	c, _ := newTestCache[int, int](time.Minute, WithShards(1))
+	s := &c.shards[0]
+	for i := range 8 {
+		s.items[i] = Item[int]{Value: i, expiresAt: int64(100 + i)}
+	}
+	s.items[8] = Item[int]{Value: 8} // never expires: must survive
+	delete(s.items, 7)               // keep the shard at 8 items
+	s.evict(0, 2)
+	for i := range 9 {
+		if i == 7 {
+			continue
+		}
+		_, ok := s.items[i]
+		if want := i >= 2; ok != want {
+			t.Fatalf("item %d present = %v, want %v: the two soonest should go", i, ok, want)
+		}
+	}
+}
+
+func TestShardEvictRemovesAllExpiredInSample(t *testing.T) {
+	c, _ := newTestCache[int, int](time.Minute, WithShards(1))
+	s := &c.shards[0]
+	for i := range 4 {
+		s.items[i] = Item[int]{Value: i, expiresAt: 10} // expired at now=50
+	}
+	s.evict(50, 1) // samples 4: all expired, all removed
+	if len(s.items) != 0 {
+		t.Fatalf("%d items left, want every expired sampled item removed", len(s.items))
 	}
 }

@@ -1,3 +1,8 @@
+// Package cache provides an in-memory TTL cache that is safe for concurrent
+// use.
+//
+// Deprecated: This package moved to go.xchunk.org/cache, which has the same
+// API. This copy gets no new features.
 package cache
 
 import (

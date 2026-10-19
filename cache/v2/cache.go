@@ -37,6 +37,9 @@
 // single lock. Reproduce with:
 //
 //	go test ./cache -run '^$' -bench GetCompare -benchmem -count 5 -cpu 4
+//
+// Deprecated: This package moved to go.xchunk.org/cache/v2, which has the
+// same API. This copy gets no new features.
 package cache
 
 import (
